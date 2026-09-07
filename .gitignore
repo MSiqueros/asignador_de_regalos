@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+env/
+.env
+.streamlit/secrets.toml
+
+# Archivos de datos y salidas locales
+*.xlsx
+*.xls
+reporte.txt
