@@ -5,8 +5,8 @@
   "customizations": {
     "codespaces": {
       "openFiles": [
-        "app.py",
-        "asignador_regalos.py"
+        "README.md",
+        "app.py"
       ]
     },
     "vscode": {
