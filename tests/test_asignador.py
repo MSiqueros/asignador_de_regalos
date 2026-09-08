@@ -122,6 +122,35 @@ def test_acepta_fechas_ya_tipadas_como_datetime():
     assert inv_rest["FechaIngreso"].notna().all()
 
 
+@pytest.mark.parametrize("vacia", [None, "", "   ", pd.NaT])
+def test_las_fechas_ausentes_no_se_reportan_como_formato_no_reconocido(vacia):
+    """El inventario deja la fecha en blanco para el stock de almacén.
+
+    Una fecha ausente no es una fecha mal escrita: contarla como formato
+    inválido dispara una advertencia falsa en cada ejecución.
+    """
+    inv = construir_inventario(
+        [("A", "TIPO1", "ART-1", "Taza", 5), ("A", "TIPO1", "ART-2", "Polo", 5)]
+    )
+    inv["FechaIngreso"] = ["01/15/2025 10:30:00 AM", vacia]
+    tdas = construir_tiendas([(1, "Tienda A", "A", "TIPO1")])
+
+    _, _, reporte, _ = ejecutar_asignacion(inv, tdas, 1, "Sobrantes")
+
+    assert "ADVERTENCIA" not in reporte
+
+
+def test_sigue_advirtiendo_cuando_la_fecha_es_ilegible():
+    inv = construir_inventario([("A", "TIPO1", "ART-1", "Taza", 5)])
+    inv["FechaIngreso"] = ["no es una fecha"]
+    tdas = construir_tiendas([(1, "Tienda A", "A", "TIPO1")])
+
+    _, _, reporte, _ = ejecutar_asignacion(inv, tdas, 1, "Sobrantes")
+
+    assert "ADVERTENCIA" in reporte
+    assert "1 fecha(s)" in reporte
+
+
 # ---------------------------------------------------------------------------
 # Normalización de texto
 # ---------------------------------------------------------------------------
@@ -147,6 +176,19 @@ def test_los_nulos_de_texto_no_se_convierten_en_la_cadena_nan():
 def test_el_cruce_de_zona_y_tipo_ignora_mayusculas_y_espacios():
     inv = construir_inventario([("  lima ", "tipo1", "ART-1", "Taza", 5)])
     tdas = construir_tiendas([(1, "Tienda A", "LIMA", "TIPO1")])
+
+    asignaciones, _, _, _ = ejecutar_asignacion(inv, tdas, 1, "Sobrantes")
+
+    assert asignaciones.loc[0, "REGALO_1"] == "ART-1"
+
+
+def test_el_cruce_de_zona_y_tipo_ignora_los_acentos():
+    """El inventario escribe 'Huarochirí' y la plantilla de tiendas 'HUAROCHIRI'.
+
+    Sin normalizar acentos la zona entera queda sin asignación.
+    """
+    inv = construir_inventario([("Huarochirí", "PEQUEÑO", "ART-1", "Taza", 5)])
+    tdas = construir_tiendas([(1, "Tienda A", "HUAROCHIRI", "PEQUENO")])
 
     asignaciones, _, _, _ = ejecutar_asignacion(inv, tdas, 1, "Sobrantes")
 

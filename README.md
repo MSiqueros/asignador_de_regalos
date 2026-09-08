@@ -26,23 +26,33 @@ pytest
 
 ## Archivos de entrada
 
-Se suben dos `.xlsx` desde la interfaz. **Los nombres de las columnas deben
-coincidir exactamente**; el orden no importa y las columnas adicionales se
-conservan sin tocarlas.
+Se suben dos `.xlsx` desde la interfaz. El orden de las columnas no importa y
+las columnas adicionales se conservan sin tocarlas.
+
+Los **nombres** de las columnas se reconocen ignorando mayúsculas, acentos,
+espacios y guiones bajos, así que `tamaño`, `TAMAÑO` y `Tamano` valen igual.
+Cuando una columna admite varios nombres, se usa el primero que aparezca en la
+lista.
+
+Si el libro tiene **varias hojas**, se elige automáticamente la que mejor calza
+con las columnas esperadas, no la primera. La plantilla real de tiendas trae una
+tabla dinámica en la primera hoja; sin esta selección la carga fallaba con
+encabezados sin sentido. La pestaña *Vistas Previas* de la app indica qué hoja
+se leyó: **es lo primero que hay que revisar ante cualquier duda de mapeo.**
 
 ### `inventario.xlsx`
 
 > ⚠️ El encabezado debe estar en la **fila 3**: la lectura salta las dos
 > primeras filas, que en el reporte de origen vienen con títulos.
 
-| Columna en el Excel   | Significado                          |
-| --------------------- | ------------------------------------ |
-| `FECHACONTABILIZACION`| Fecha de ingreso del artículo        |
-| `ZONA`                | Zona en la que el artículo es válido |
-| `TIPOREGALO`          | Tipo de regalo                       |
-| `ID`                  | Código del artículo                  |
-| `OBSERVACION`         | Descripción del artículo             |
-| `CANTIDAD`            | Unidades disponibles                 |
+| Nombre interno        | Columna en el Excel                        | Significado                          |
+| --------------------- | ------------------------------------------ | ------------------------------------ |
+| `FechaIngreso`        | `FECHACONTABILIZACION` o `FECHAINGRESO`    | Fecha de ingreso del artículo        |
+| `ZonaElegible`        | `ZONA` o `ZONAELEGIBLE`                    | Zona en la que el artículo es válido |
+| `TipoRegalo`          | `TIPOREGALO`                               | Segmento de tienda que lo recibe     |
+| `CodigoArticulo`      | `ID`                                       | Código del artículo                  |
+| `DescripcionArticulo` | `OBSERVACION` o `DESCRIPCIONARTICULO`      | Descripción del artículo             |
+| `CantidadDisponible`  | `CANTIDAD` o `SALDO`                       | Unidades disponibles                 |
 
 Las filas con cantidad igual o menor a cero se descartan antes de asignar.
 
@@ -50,12 +60,16 @@ Las filas con cantidad igual o menor a cero se descartan antes de asignar.
 
 > El encabezado va en la **fila 1**, sin filas previas.
 
-| Columna en el Excel  | Significado                     |
-| -------------------- | ------------------------------- |
-| `CODIGO`             | Identificador de la tienda      |
-| `NOMBRE_COLABORADOR` | Nombre de la tienda             |
-| `TERRITORIO`         | Zona a la que pertenece         |
-| `TIPOREGALO`         | Tipo de regalo que le corresponde |
+| Nombre interno | Columna en el Excel      | Significado                       |
+| -------------- | ------------------------ | --------------------------------- |
+| `IDTienda`     | `CODIGO`                 | Identificador de la tienda        |
+| `NombreTienda` | `NOMBRE_COLABORADOR`     | Nombre de la tienda               |
+| `Zona`         | `TERRITORIO` o `ZONA`    | Zona a la que pertenece           |
+| `TipoRegalo`   | `TAMAÑO` o `TIPOREGALO`  | Segmento de la tienda             |
+
+> ⚠️ La plantilla de tiendas llama **`tamaño`** al mismo concepto que el
+> inventario llama **`TIPOREGALO`**: es la columna con la que se cruzan los dos
+> archivos. Ambos nombres se aceptan.
 
 ### Sobre las fechas
 
@@ -65,14 +79,28 @@ parseo flexible y **las fechas que no se logren interpretar se informan en el
 reporte**. Esto importa porque las estrategias `Sobrantes` y `Novedades`
 ordenan por fecha: si no se interpreta, el orden pierde sentido.
 
+Una celda de fecha **vacía** no cuenta como formato inválido y no genera
+advertencia: parte del stock llega sin fecha de contabilización.
+
 ---
 
 ## Cómo asigna
 
-El cruce entre tienda e inventario se hace por **zona** (`TERRITORIO` contra
-`ZONA`) y por **tipo de regalo**, ignorando mayúsculas y espacios sobrantes,
-de modo que `"  lima "` y `"LIMA"` se consideran la misma zona. Los valores
-originales se conservan intactos en el archivo de salida.
+El cruce entre tienda e inventario se hace por **zona** (`Zona` contra
+`ZonaElegible`) y por **segmento** (`TipoRegalo` en ambos lados). La
+comparación ignora mayúsculas, espacios sobrantes y **acentos**, de modo que
+`"  lima "` y `"LIMA"` son la misma zona, y `Huarochirí` cruza con
+`HUAROCHIRI`. Los valores originales se conservan intactos en el archivo de
+salida.
+
+> ⚠️ Fuera de eso, el cruce es **exacto**: no hay tabla de sinónimos. Si el
+> inventario dice `MEDIANO` y las tiendas dicen `MEDIANA`, no cruzan y esas
+> tiendas se reportan sin asignación. Los dos archivos deben usar el mismo
+> vocabulario de segmento en el origen. Del mismo modo, el stock de una zona
+> que ninguna tienda declara (por ejemplo `LIMA Almacen`) queda sin repartir.
+> Revisa siempre el conteo de "Tiendas con asignación" del reporte: si es
+> mucho más bajo de lo esperado, casi siempre es un desajuste de vocabulario y
+> no un error del programa.
 
 ### Estrategias de priorización
 

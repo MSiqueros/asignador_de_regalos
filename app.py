@@ -143,6 +143,19 @@ def panel_diagnostico(chequeos):
         )
 
 
+def origen_leido(df):
+    """Deja a la vista de qué hoja salieron los datos y con qué columnas.
+
+    La plantilla de tiendas trae una tabla dinámica en la primera hoja, así que
+    saber qué hoja se usó es lo primero que hay que confirmar ante una duda.
+    """
+    hoja = df.attrs.get("hoja")
+    detalle = f"{len(df)} filas · {len(df.columns)} columnas"
+    if hoja:
+        return f"Hoja leída: «{hoja}» — {detalle}"
+    return detalle
+
+
 def mostrar_errores(errores):
     """Muestra el mensaje principal como error y el resto como detalle."""
     if errores:
@@ -210,8 +223,10 @@ def mostrar_resultados(inv, tdas, resultado):
 
     with tab4:
         st.subheader("Inventario leído (columnas ya renombradas)")
+        st.caption(origen_leido(inv))
         st.dataframe(inv.head())
         st.subheader("Tiendas leídas (columnas ya renombradas)")
+        st.caption(origen_leido(tdas))
         st.dataframe(tdas.head())
 
 

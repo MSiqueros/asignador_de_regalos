@@ -1,4 +1,5 @@
 import io
+import unicodedata
 from collections import deque
 from datetime import datetime
 
@@ -36,9 +37,26 @@ def normalizar_texto(df):
     return df
 
 
+def _sin_acentos(valor):
+    descompuesto = unicodedata.normalize("NFKD", valor)
+    return "".join(c for c in descompuesto if not unicodedata.combining(c))
+
+
 def clave_normalizada(serie):
-    """Genera la clave de cruce: sin espacios y en mayúsculas."""
-    return serie.astype("string").str.strip().str.upper().fillna("")
+    """Genera la clave de cruce: sin espacios, sin acentos y en mayúsculas.
+
+    Los acentos importan: el inventario escribe "Huarochirí" y la plantilla de
+    tiendas "HUAROCHIRI". Sin normalizarlos la zona completa queda sin cruce y
+    sus tiendas se reportan como "sin inventario" aunque haya stock.
+    """
+    return (
+        serie.astype("string")
+        .fillna("")
+        .map(_sin_acentos)
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
 
 
 def parsear_fechas(serie):
@@ -51,8 +69,14 @@ def parsear_fechas(serie):
     if pd.api.types.is_datetime64_any_dtype(serie):
         return serie, 0
 
+    # Una fecha ausente no es una fecha mal escrita. El inventario deja la
+    # fecha en blanco para parte del stock y `normalizar_texto` ya convirtió
+    # esos nulos en cadena vacía, así que hay que excluir ambos casos: contarlos
+    # dispararía una advertencia de "formato no reconocido" en cada ejecución.
+    presente = serie.notna() & serie.astype("string").fillna("").str.strip().ne("")
+
     convertida = pd.to_datetime(serie, errors="coerce", format=FORMATO_FECHA_ORIGEN)
-    pendientes = convertida.isna() & serie.notna()
+    pendientes = convertida.isna() & presente
     if pendientes.any():
         try:
             alternativa = pd.to_datetime(
@@ -62,7 +86,7 @@ def parsear_fechas(serie):
             alternativa = pd.to_datetime(serie[pendientes], errors="coerce")
         convertida.loc[pendientes] = alternativa
 
-    no_reconocidas = int((convertida.isna() & serie.notna()).sum())
+    no_reconocidas = int((convertida.isna() & presente).sum())
     return convertida, no_reconocidas
 
 
