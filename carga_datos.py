@@ -47,6 +47,23 @@ def normalizar_encabezado(nombre):
     return "".join(texto.split()).replace("_", "").replace("-", "").upper()
 
 
+def _buscar_origen(alias, indice):
+    """Nombre real del primer alias presente en `indice`, o None si no está.
+
+    El índice se recibe como parámetro porque cambia entre pasadas: la de
+    obligatorias mira los encabezados originales y la de opcionales los ya
+    renombrados.
+    """
+    return next(
+        (
+            indice[normalizar_encabezado(a)]
+            for a in alias
+            if normalizar_encabezado(a) in indice
+        ),
+        None,
+    )
+
+
 def preparar_dataframe(df, columnas, nombre_archivo, opcionales=None):
     """Valida duplicados, renombra columnas y detecta las que falten.
 
@@ -75,14 +92,7 @@ def preparar_dataframe(df, columnas, nombre_archivo, opcionales=None):
         # Si el archivo ya trae el nombre interno, renombrar crearía un duplicado.
         if destino in df.columns:
             continue
-        origen = next(
-            (
-                presentes[normalizar_encabezado(a)]
-                for a in alias
-                if normalizar_encabezado(a) in presentes
-            ),
-            None,
-        )
+        origen = _buscar_origen(alias, presentes)
         if origen is None:
             faltantes.append((destino, alias))
         else:
@@ -100,25 +110,26 @@ def preparar_dataframe(df, columnas, nombre_archivo, opcionales=None):
 
     df = df.rename(columns=renombres)
 
+    # `presentes` mira los nombres previos al renombre; para las opcionales hay
+    # que reindexar, o un alias que ya se llevó una obligatoria se perdería.
+    disponibles = {}
+    for real in df.columns:
+        disponibles.setdefault(normalizar_encabezado(real), real)
+
     # Las opcionales se resuelven después de las obligatorias: si falta alguna
     # se crea vacía y se deja constancia, para que la UI pueda avisarlo.
     ausentes = []
     for destino, alias in (opcionales or {}).items():
-        if destino in df.columns:
-            continue
-        origen = next(
-            (
-                presentes[normalizar_encabezado(a)]
-                for a in alias
-                if normalizar_encabezado(a) in presentes
-            ),
-            None,
-        )
-        if origen is None:
-            df[destino] = ""
-            ausentes.append(destino)
-        else:
-            df = df.rename(columns={origen: destino})
+        if destino not in df.columns:
+            origen = _buscar_origen(alias, disponibles)
+            if origen is None:
+                df[destino] = ""
+                ausentes.append(destino)
+            else:
+                df = df.rename(columns={origen: destino})
+        # Unifica el vacío: una plantilla con la columna en blanco se lee como
+        # NaN, y quien consuma la columna espera el mismo centinela siempre.
+        df[destino] = df[destino].fillna("")
 
     df.attrs["columnas_opcionales_ausentes"] = ausentes
     return df, []
