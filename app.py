@@ -164,7 +164,22 @@ def mostrar_errores(errores):
             st.caption(detalle)
 
 
-def procesar(inv_file, tdas_file, n_regalos, estrategia):
+def aviso_de_columna_ausente(tdas):
+    """Avisa si la plantilla no traía la columna 'Regalo adicional'.
+
+    Devuelve True si mostró el aviso, para poder probarlo sin levantar la app.
+    """
+    if "TipoRegaloAdicional" not in tdas.attrs.get("columnas_opcionales_ausentes", []):
+        return False
+    st.info(
+        "La plantilla de tiendas no trae la columna **Regalo adicional**: "
+        "cada tienda recibirá un solo regalo. Agrégala si necesitas asignar "
+        "un segundo obsequio."
+    )
+    return True
+
+
+def procesar(inv_file, tdas_file, estrategia):
     """Lee, valida y ejecuta la asignación. Devuelve None si la validación falla."""
     inv, errores_inv = cargar_inventario(inv_file)
     tdas, errores_tdas = cargar_tiendas(tdas_file)
@@ -174,7 +189,9 @@ def procesar(inv_file, tdas_file, n_regalos, estrategia):
     if inv is None or tdas is None:
         return None
 
-    return inv, tdas, ejecutar_asignacion(inv, tdas, n_regalos, estrategia)
+    aviso_de_columna_ausente(tdas)
+
+    return inv, tdas, ejecutar_asignacion(inv, tdas, estrategia)
 
 
 def mostrar_resultados(inv, tdas, resultado):
@@ -188,11 +205,16 @@ def mostrar_resultados(inv, tdas, resultado):
 
     tiendas_con_regalo = int(asignaciones["REGALO_1"].ne("").sum())
     total_entregado = tiendas_con_regalo + int(asignaciones["REGALO_2"].ne("").sum())
+    metricas = asignaciones.attrs.get("metricas", {})
 
-    m1, m2, m3 = st.columns(3)
+    m1, m2, m3, m4 = st.columns(4)
     m1.metric("Tiendas procesadas", len(asignaciones))
     m2.metric("Tiendas con asignación", tiendas_con_regalo)
     m3.metric("Regalos entregados", total_entregado)
+    m4.metric(
+        "Regalos adicionales entregados",
+        metricas.get("adicionales_entregados", 0),
+    )
 
     tab1, tab2, tab3, tab4 = st.tabs(
         ["🎯 Asignaciones", "📦 Inventario Restante", "📋 Reporte", "📊 Vistas Previas"]
@@ -252,10 +274,10 @@ with col2:
         ["Sobrantes", "Novedades", "AltoStock", "Equitativo"],
         help="Define qué artículos se usarán primero.",
     )
-    n_regalos = st.selectbox(
-        "N° de regalos por tienda",
-        [1, 2],
-        help="Cuántos regalos se asignarán a cada tienda.",
+    st.caption(
+        "La cantidad de regalos ya no se elige aquí: la define la columna "
+        "**Regalo adicional** de la plantilla de tiendas. Si está vacía, la "
+        "tienda recibe un regalo; si trae un tipo, recibe además uno de ese tipo."
     )
 
 col_generar, col_demo = st.columns([3, 1])
@@ -277,7 +299,7 @@ if generar:
     else:
         with st.spinner("Procesando archivos y realizando asignaciones..."):
             try:
-                resultado = procesar(inv_file, tdas_file, n_regalos, estrategia)
+                resultado = procesar(inv_file, tdas_file, estrategia)
             except Exception as e:  # noqa: BLE001 - se muestra la traza al usuario
                 st.error("Ocurrió un error inesperado durante el proceso.")
                 st.exception(e)
@@ -293,7 +315,7 @@ elif demo:
             resultado = (
                 inv_demo,
                 tdas_demo,
-                ejecutar_asignacion(inv_demo, tdas_demo, n_regalos, estrategia),
+                ejecutar_asignacion(inv_demo, tdas_demo, estrategia),
             )
         except Exception as e:  # noqa: BLE001 - se muestra la traza al usuario
             st.error("Ocurrió un error inesperado con los datos de ejemplo.")

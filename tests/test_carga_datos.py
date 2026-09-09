@@ -268,16 +268,18 @@ def test_flujo_completo_desde_los_excel_hasta_la_asignacion():
         filas_basura=2,
     )
     tdas_file = construir_xlsx(
-        encabezados_de(TDAS_COLUMNAS),
-        [[101, "Tienda Centro", "LIMA", "TIPO1"], [102, "Tienda Norte", "LIMA", "TIPO1"]],
+        encabezados_de(TDAS_COLUMNAS) + ["Regalo adicional"],
+        [
+            [101, "Tienda Centro", "LIMA", "TIPO1", "TIPO1"],
+            [102, "Tienda Norte", "LIMA", "TIPO1", "TIPO1"],
+        ],
     )
 
     inv, err_inv = cargar_inventario(inv_file)
     tdas, err_tdas = cargar_tiendas(tdas_file)
     assert err_inv == [] and err_tdas == []
 
-    asignaciones, inv_rest, reporte, excel_bytes = ejecutar_asignacion(
-        inv, tdas, 2, "Sobrantes"
+    asignaciones, inv_rest, reporte, excel_bytes = ejecutar_asignacion(inv, tdas, "Sobrantes"
     )
 
     assert asignaciones["REGALO_1"].ne("").all()

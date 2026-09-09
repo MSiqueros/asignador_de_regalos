@@ -16,6 +16,7 @@ FORMATO_FECHA_ORIGEN = "%m/%d/%Y %I:%M:%S %p"
 # por diferencias de captura ("lima" vs "LIMA").
 COL_ZONA_KEY = "_ZonaKey"
 COL_TIPO_KEY = "_TipoKey"
+COL_TIPO_ADIC_KEY = "_TipoAdicKey"
 
 COLUMNAS_ASIGNACION = ["REGALO_1", "DESC_REGALO_1", "REGALO_2", "DESC_REGALO_2", "NOTAS"]
 
@@ -124,52 +125,51 @@ def ordenar_por_estrategia(df_inv, estrategia):
     return df_inv
 
 
-def _tomar(df_inv_tipo, tomas):
-    """Descuenta unidades y devuelve (ok, codigos, descripciones, inventario)."""
-    inv = df_inv_tipo.copy()
-    codigos, descripciones = [], []
-    for idx, unidades in tomas:
-        inv.loc[idx, "CantidadDisponible"] -= unidades
-        codigos.extend([inv.at[idx, "CodigoArticulo"]] * unidades)
-        descripciones.extend([inv.at[idx, "DescripcionArticulo"]] * unidades)
-    return True, codigos, descripciones, inv
+def tomar_regalo(df_inv_tipo, codigos_excluidos=()):
+    """Entrega una unidad del pozo recibido, prefiriendo un artículo nuevo.
 
+    `codigos_excluidos` son los artículos que esa tienda ya recibió: se usan
+    para darle variedad cuando su regalo adicional es del mismo tipo que el
+    primero. Si no hay otro artículo con stock, se repite el mismo.
 
-def intentar_asignar_para_tienda(df_inv_tipo, n_regalos):
-    """Intenta asignar `n_regalos` de un inventario de un tipo específico.
-
-    Para dos regalos se prefiere dar variedad a la tienda: primero dos
-    artículos distintos y, sólo si no hay, dos unidades del mismo artículo.
-
-    Devuelve (éxito, códigos, descripciones, inventario_actualizado).
+    Devuelve (ok, codigo, descripcion, inventario_actualizado). No muta el
+    DataFrame recibido.
     """
     inv = df_inv_tipo
     disponibles = inv.index[inv["CantidadDisponible"] >= 1]
+    if len(disponibles) == 0:
+        return False, "", "", df_inv_tipo
 
-    if n_regalos == 1:
-        if len(disponibles) > 0:
-            return _tomar(inv, [(disponibles[0], 1)])
-        return False, [], [], df_inv_tipo
+    idx = next(
+        (
+            i
+            for i in disponibles
+            if inv.at[i, "CodigoArticulo"] not in codigos_excluidos
+        ),
+        disponibles[0],
+    )
 
-    if n_regalos == 2:
-        # 1) Dos artículos distintos, una unidad de cada uno.
-        if len(disponibles) >= 2:
-            idx1 = disponibles[0]
-            cod1 = inv.at[idx1, "CodigoArticulo"]
-            for idx2 in disponibles[1:]:
-                if inv.at[idx2, "CodigoArticulo"] != cod1:
-                    return _tomar(inv, [(idx1, 1), (idx2, 1)])
+    inv = inv.copy()
+    inv.loc[idx, "CantidadDisponible"] -= 1
+    return True, inv.at[idx, "CodigoArticulo"], inv.at[idx, "DescripcionArticulo"], inv
 
-        # 2) Dos unidades del mismo artículo.
-        con_stock_doble = inv.index[inv["CantidadDisponible"] >= 2]
-        if len(con_stock_doble) > 0:
-            return _tomar(inv, [(con_stock_doble[0], 2)])
 
-        # 3) Dos filas de stock del mismo artículo, una unidad de cada una.
-        if len(disponibles) >= 2:
-            return _tomar(inv, [(disponibles[0], 1), (disponibles[1], 1)])
+def servir_de_pozo(inv_por_tipo, tipo_key, codigos_excluidos=()):
+    """Toma una unidad del pozo `tipo_key` y actualiza el diccionario in situ.
 
-    return False, [], [], df_inv_tipo
+    Un tipo que no existe en la zona se trata igual que un pozo agotado: no
+    es un error, es una asignación que no se pudo completar.
+
+    Devuelve (ok, codigo, descripcion).
+    """
+    pozo = inv_por_tipo.get(tipo_key)
+    if pozo is None:
+        return False, "", ""
+
+    ok, codigo, descripcion, pozo_nuevo = tomar_regalo(pozo, codigos_excluidos)
+    if ok:
+        inv_por_tipo[tipo_key] = pozo_nuevo
+    return ok, codigo, descripcion
 
 
 def _dar_formato_hoja(hoja):
@@ -193,8 +193,12 @@ def _dar_formato_hoja(hoja):
 # ============================
 # Función principal
 # ============================
-def ejecutar_asignacion(inv, tdas, n_regalos, estrategia):
-    """Orquesta la asignación de regalos a tiendas con lógica de fallback.
+def ejecutar_asignacion(inv, tdas, estrategia):
+    """Orquesta la asignación de regalos a tiendas en dos pasadas por zona.
+
+    El primer regalo de todas las tiendas de una zona tiene prioridad sobre
+    cualquier regalo adicional: recién cuando todas tuvieron su oportunidad se
+    reparte lo que sobró entre las que piden un segundo obsequio.
 
     No modifica los DataFrames recibidos: trabaja siempre sobre copias.
     """
@@ -215,6 +219,11 @@ def ejecutar_asignacion(inv, tdas, n_regalos, estrategia):
     inv[COL_TIPO_KEY] = clave_normalizada(inv["TipoRegalo"])
     tdas[COL_ZONA_KEY] = clave_normalizada(tdas["Zona"])
     tdas[COL_TIPO_KEY] = clave_normalizada(tdas["TipoRegalo"])
+    # La columna es opcional en la plantilla: si no llegó, nadie pide adicional.
+    if "TipoRegaloAdicional" in tdas.columns:
+        tdas[COL_TIPO_ADIC_KEY] = clave_normalizada(tdas["TipoRegaloAdicional"])
+    else:
+        tdas[COL_TIPO_ADIC_KEY] = ""
 
     # 2. Inicializar las columnas de asignación (texto libre)
     for columna in COLUMNAS_ASIGNACION:
@@ -222,15 +231,9 @@ def ejecutar_asignacion(inv, tdas, n_regalos, estrategia):
 
     excepciones = []
     parciales = 0
+    piden_adicional = 0
+    adicionales_entregados = 0
     inv_actualizado = inv.copy()
-
-    def registrar_asignacion(idx_tienda, codigos, descripciones, nota=""):
-        tdas.loc[idx_tienda, "REGALO_1"] = codigos[0]
-        tdas.loc[idx_tienda, "DESC_REGALO_1"] = descripciones[0]
-        if len(codigos) > 1:
-            tdas.loc[idx_tienda, "REGALO_2"] = codigos[1]
-            tdas.loc[idx_tienda, "DESC_REGALO_2"] = descripciones[1]
-        tdas.loc[idx_tienda, "NOTAS"] = nota
 
     # 3. Iterar por cada zona
     for zona_key in sorted(tdas[COL_ZONA_KEY].unique()):
@@ -256,47 +259,46 @@ def ejecutar_asignacion(inv, tdas, n_regalos, estrategia):
             tipo: df.copy() for tipo, df in inv_z_ord.groupby(COL_TIPO_KEY, sort=False)
         }
 
-        # 4. Iterar por cada tienda de la zona
+        # Lo que cada tienda de la zona consiguió y lo que le faltó.
+        entregados = {idx: [] for idx in tiendas_z.index}
+        faltantes = {idx: [] for idx in tiendas_z.index}
+
+        # 4. Pasada 1: el primer regalo de todas las tiendas de la zona.
         for idx_tienda, rowt in tiendas_z.iterrows():
-            tipo_key = rowt[COL_TIPO_KEY]
-            asignada = False
+            ok, cod, desc = servir_de_pozo(inv_por_tipo, rowt[COL_TIPO_KEY])
+            if ok:
+                entregados[idx_tienda].append((cod, desc))
+            else:
+                faltantes[idx_tienda].append(("principal", rowt["TipoRegalo"]))
 
-            if tipo_key in inv_por_tipo:
-                ok, cods, descs, df_nuevo = intentar_asignar_para_tienda(
-                    inv_por_tipo[tipo_key], n_regalos
+        # 5. Pasada 2: recién ahora los adicionales, con el stock sobrante.
+        for idx_tienda, rowt in tiendas_z.iterrows():
+            if not rowt[COL_TIPO_ADIC_KEY]:
+                continue
+            piden_adicional += 1
+            ya_dados = [codigo for codigo, _ in entregados[idx_tienda]]
+            ok, cod, desc = servir_de_pozo(
+                inv_por_tipo, rowt[COL_TIPO_ADIC_KEY], ya_dados
+            )
+            if ok:
+                entregados[idx_tienda].append((cod, desc))
+                adicionales_entregados += 1
+            else:
+                faltantes[idx_tienda].append(
+                    ("adicional", rowt["TipoRegaloAdicional"])
                 )
-                if ok:
-                    inv_por_tipo[tipo_key] = df_nuevo
-                    registrar_asignacion(idx_tienda, cods, descs)
-                    asignada = True
 
-                # Fallback: entregar al menos un regalo.
-                elif n_regalos > 1:
-                    ok, cods, descs, df_nuevo = intentar_asignar_para_tienda(
-                        inv_por_tipo[tipo_key], 1
-                    )
-                    if ok:
-                        inv_por_tipo[tipo_key] = df_nuevo
-                        registrar_asignacion(
-                            idx_tienda,
-                            cods,
-                            descs,
-                            f"Asignación parcial (1 de {n_regalos} solicitados)",
-                        )
-                        asignada = True
-                        parciales += 1
+        # 6. Volcar el resultado de la zona a las columnas de salida.
+        for idx_tienda, rowt in tiendas_z.iterrows():
+            recibidos = entregados[idx_tienda]
+            sin_stock = faltantes[idx_tienda]
 
-            if not asignada:
-                if tipo_key not in inv_por_tipo:
-                    motivo = (
-                        f"No hay inventario del tipo '{rowt['TipoRegalo']}' "
-                        f"en la zona {rowt['Zona']}"
-                    )
-                else:
-                    motivo = (
-                        f"Stock insuficiente para asignar los {n_regalos} "
-                        f"regalos solicitados"
-                    )
+            if not recibidos:
+                etiquetas = " ni ".join(f"'{etiqueta}'" for _, etiqueta in sin_stock)
+                motivo = (
+                    f"No hay inventario del tipo {etiquetas} "
+                    f"en la zona {rowt['Zona']}"
+                )
                 tdas.loc[idx_tienda, "NOTAS"] = motivo
                 excepciones.append(
                     {
@@ -306,8 +308,24 @@ def ejecutar_asignacion(inv, tdas, n_regalos, estrategia):
                         "Motivo": motivo,
                     }
                 )
+                continue
 
-        # 5. Consolidar los descuentos de la zona en el inventario global.
+            # Los regalos conseguidos ocupan las ranuras en orden, sin huecos:
+            # si faltó el principal, el adicional queda en REGALO_1.
+            for ranura, (codigo, descripcion) in enumerate(recibidos, start=1):
+                tdas.loc[idx_tienda, f"REGALO_{ranura}"] = codigo
+                tdas.loc[idx_tienda, f"DESC_REGALO_{ranura}"] = descripcion
+
+            if sin_stock:
+                clase, etiqueta = sin_stock[0]
+                que = "del regalo adicional" if clase == "adicional" else "del tipo"
+                tdas.loc[idx_tienda, "NOTAS"] = (
+                    f"Asignación parcial: sin stock {que} '{etiqueta}' "
+                    f"en la zona {rowt['Zona']}"
+                )
+                parciales += 1
+
+        # 7. Consolidar los descuentos de la zona en el inventario global.
         #    La asignación por índice es segura porque `ordenar_por_estrategia`
         #    preserva las etiquetas originales de fila.
         for df_tipo in inv_por_tipo.values():
@@ -315,26 +333,37 @@ def ejecutar_asignacion(inv, tdas, n_regalos, estrategia):
                 "CantidadDisponible"
             ]
 
-    # 6. Preparar salida (sin las columnas auxiliares de cruce)
-    auxiliares = [COL_ZONA_KEY, COL_TIPO_KEY]
-    df_tiendas_final = tdas.drop(columns=auxiliares)
+    # 8. Preparar salida (sin las columnas auxiliares de cruce). La clave del
+    #    tipo adicional solo existe en tiendas, no en el inventario.
+    df_tiendas_final = tdas.drop(
+        columns=[COL_ZONA_KEY, COL_TIPO_KEY, COL_TIPO_ADIC_KEY]
+    )
     df_inv_restante = (
         inv_actualizado[inv_actualizado["CantidadDisponible"] > 0]
-        .drop(columns=auxiliares)
+        .drop(columns=[COL_ZONA_KEY, COL_TIPO_KEY])
         .copy()
     )
 
     tiendas_asignadas = int(df_tiendas_final["REGALO_1"].ne("").sum())
     total_regalos = tiendas_asignadas + int(df_tiendas_final["REGALO_2"].ne("").sum())
 
+    # "Regalos adicionales entregados" no se puede derivar de REGALO_2: cuando
+    # falta el principal, el adicional ocupa REGALO_1 y ese conteo lo perdería.
+    df_tiendas_final.attrs["metricas"] = {
+        "piden_adicional": piden_adicional,
+        "adicionales_entregados": adicionales_entregados,
+        "parciales": parciales,
+    }
+
     reporte = [
         "==== REPORTE DE EJECUCIÓN ====",
         f"Fecha de ejecución: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"EstrategiaDePriorizacion: {estrategia}",
-        f"NumeroRegalosPorTienda: {n_regalos}",
         f"Tiendas procesadas: {len(df_tiendas_final)}",
         f"Tiendas con asignación: {tiendas_asignadas}",
         f"Tiendas con asignación parcial: {parciales}",
+        f"Tiendas que piden regalo adicional: {piden_adicional}",
+        f"Regalos adicionales entregados: {adicionales_entregados}",
         f"Total de regalos asignados: {total_regalos}",
         f"Unidades restantes en inventario: {int(df_inv_restante['CantidadDisponible'].sum())}",
     ]
@@ -352,7 +381,7 @@ def ejecutar_asignacion(inv, tdas, n_regalos, estrategia):
     else:
         reporte.append("Sin excepciones.")
 
-    # 7. Exportar a Excel en memoria con formato
+    # 9. Exportar a Excel en memoria con formato
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df_tiendas_final.to_excel(writer, index=False, sheet_name="Asignacion")
