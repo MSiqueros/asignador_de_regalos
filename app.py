@@ -292,6 +292,19 @@ def mostrar_resultados(inv, tdas, resultado):
         )
 
     with tab3:
+        st.subheader("Regalos entregados por artículo y zona")
+        matriz = asignaciones.attrs.get("matriz_zonas")
+        if matriz is None or matriz.empty:
+            st.info("No se entregó ningún regalo, así que no hay nada que resumir.")
+        else:
+            st.caption(
+                "Es la tabla dinámica que se armaba a mano: total por artículo "
+                "a la derecha y total por zona en la última fila. Va también "
+                "como hoja «RegalosPorZona» del Excel descargado."
+            )
+            st.dataframe(matriz, use_container_width=True, hide_index=True)
+
+        st.subheader("Resumen de la ejecución")
         # `st.code` respeta la fuente monoespaciada: el reporte alinea sus
         # cifras en columna y con la tipografía normal la alineación se rompe.
         st.code(reporte_txt, language=None)

@@ -233,6 +233,51 @@ def _dar_formato_hoja(hoja):
 
 
 # ============================
+# Resumen de entregas (tabla dinámica)
+# ============================
+COLUMNA_TOTAL = "TOTAL"
+
+ENCABEZADOS_MATRIZ = {
+    "CodigoArticulo": "Artículo",
+    "TipoRegalo": "Tamaño",
+    "DescripcionArticulo": "Descripción",
+}
+
+
+def matriz_regalos_por_zona(df_entregas):
+    """Regalos entregados por artículo (filas) y zona (columnas).
+
+    Es la tabla dinámica que se armaba a mano sobre la hoja de asignación.
+    Lleva total por artículo a la derecha y total por zona al pie; el detalle
+    se ordena de mayor a menor entrega para que lo relevante quede arriba.
+
+    Devuelve un DataFrame vacío si no se entregó ningún regalo.
+    """
+    if df_entregas.empty:
+        return pd.DataFrame()
+
+    matriz = df_entregas.pivot_table(
+        index=["CodigoArticulo", "TipoRegalo", "DescripcionArticulo"],
+        columns="Zona",
+        values="Regalos",
+        aggfunc="sum",
+        fill_value=0,
+    )
+    matriz = matriz.reindex(sorted(matriz.columns), axis=1)
+    matriz[COLUMNA_TOTAL] = matriz.sum(axis=1)
+    matriz = matriz.sort_values(COLUMNA_TOTAL, ascending=False).reset_index()
+    matriz = matriz.rename(columns=ENCABEZADOS_MATRIZ)
+    matriz.columns.name = None
+
+    # Fila de totales al pie, con las claves en blanco salvo la etiqueta.
+    zonas = [c for c in matriz.columns if c not in ENCABEZADOS_MATRIZ.values()]
+    pie = {c: "" for c in ENCABEZADOS_MATRIZ.values()}
+    pie[ENCABEZADOS_MATRIZ["CodigoArticulo"]] = COLUMNA_TOTAL
+    pie.update({z: int(matriz[z].sum()) for z in zonas})
+    return pd.concat([matriz, pd.DataFrame([pie])], ignore_index=True)
+
+
+# ============================
 # Reporte de texto
 # ============================
 ANCHO_REPORTE = 66
@@ -400,6 +445,7 @@ def ejecutar_asignacion(inv, tdas, estrategia):
         tdas[columna] = pd.Series("", index=tdas.index, dtype=object)
 
     excepciones = []
+    entregas = []
     parciales = 0
     piden_adicional = 0
     adicionales_entregados = 0
@@ -437,7 +483,7 @@ def ejecutar_asignacion(inv, tdas, estrategia):
         for idx_tienda, rowt in tiendas_z.iterrows():
             ok, cod, desc = servir_de_pozo(inv_por_tipo, rowt[COL_TIPO_KEY])
             if ok:
-                entregados[idx_tienda].append((cod, desc))
+                entregados[idx_tienda].append((cod, desc, rowt["TipoRegalo"]))
             else:
                 faltantes[idx_tienda].append(("principal", rowt["TipoRegalo"]))
 
@@ -446,12 +492,14 @@ def ejecutar_asignacion(inv, tdas, estrategia):
             if not rowt[COL_TIPO_ADIC_KEY]:
                 continue
             piden_adicional += 1
-            ya_dados = [codigo for codigo, _ in entregados[idx_tienda]]
+            ya_dados = [codigo for codigo, _, _ in entregados[idx_tienda]]
             ok, cod, desc = servir_de_pozo(
                 inv_por_tipo, rowt[COL_TIPO_ADIC_KEY], ya_dados
             )
             if ok:
-                entregados[idx_tienda].append((cod, desc))
+                entregados[idx_tienda].append(
+                    (cod, desc, rowt["TipoRegaloAdicional"])
+                )
                 adicionales_entregados += 1
             else:
                 faltantes[idx_tienda].append(
@@ -485,9 +533,20 @@ def ejecutar_asignacion(inv, tdas, estrategia):
 
             # Los regalos conseguidos ocupan las ranuras en orden, sin huecos:
             # si faltó el principal, el adicional queda en REGALO_1.
-            for ranura, (codigo, descripcion) in enumerate(recibidos, start=1):
+            for ranura, (codigo, descripcion, tipo) in enumerate(recibidos, start=1):
                 tdas.loc[idx_tienda, f"REGALO_{ranura}"] = codigo
                 tdas.loc[idx_tienda, f"DESC_REGALO_{ranura}"] = descripcion
+                # El tipo se anota aquí y no se deduce de la ranura: cuando
+                # falta el principal, el adicional ocupa REGALO_1.
+                entregas.append(
+                    {
+                        "Zona": rowt["Zona"],
+                        "TipoRegalo": tipo,
+                        "CodigoArticulo": codigo,
+                        "DescripcionArticulo": descripcion,
+                        "Regalos": 1,
+                    }
+                )
 
             if sin_stock:
                 clase, etiqueta = sin_stock[0]
@@ -525,6 +584,29 @@ def ejecutar_asignacion(inv, tdas, estrategia):
     tiendas_asignadas = int(df_tiendas_final["REGALO_1"].ne("").sum())
     total_regalos = tiendas_asignadas + int(df_tiendas_final["REGALO_2"].ne("").sum())
 
+    # Detalle agregado de lo entregado, y su tabla dinámica por zona. Viajan en
+    # `attrs` para no cambiar la firma de retorno de la función.
+    df_entregas = (
+        pd.DataFrame(
+            entregas,
+            columns=[
+                "Zona",
+                "TipoRegalo",
+                "CodigoArticulo",
+                "DescripcionArticulo",
+                "Regalos",
+            ],
+        )
+        .groupby(
+            ["Zona", "TipoRegalo", "CodigoArticulo", "DescripcionArticulo"],
+            as_index=False,
+        )["Regalos"]
+        .sum()
+    )
+    df_matriz = matriz_regalos_por_zona(df_entregas)
+    df_tiendas_final.attrs["entregas"] = df_entregas
+    df_tiendas_final.attrs["matriz_zonas"] = df_matriz
+
     # "Regalos adicionales entregados" no se puede derivar de REGALO_2: cuando
     # falta el principal, el adicional ocupa REGALO_1 y ese conteo lo perdería.
     df_tiendas_final.attrs["metricas"] = {
@@ -551,7 +633,11 @@ def ejecutar_asignacion(inv, tdas, estrategia):
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df_tiendas_final.to_excel(writer, index=False, sheet_name="Asignacion")
         df_inv_restante.to_excel(writer, index=False, sheet_name="InventarioRestante")
-        for nombre_hoja in ("Asignacion", "InventarioRestante"):
+        hojas = ["Asignacion", "InventarioRestante"]
+        if not df_matriz.empty:
+            df_matriz.to_excel(writer, index=False, sheet_name="RegalosPorZona")
+            hojas.append("RegalosPorZona")
+        for nombre_hoja in hojas:
             _dar_formato_hoja(writer.sheets[nombre_hoja])
 
     return df_tiendas_final, df_inv_restante, reporte, output.getvalue()

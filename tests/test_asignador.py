@@ -608,3 +608,109 @@ def test_los_porcentajes_del_reporte_estan_en_escala_de_cien():
 
     # 1 de 2 tiendas asignada: debe leerse 50.0%, no 0.5%.
     assert "50.0%" in reporte
+
+
+# ---------------------------------------------------------------------------
+# Tabla dinámica de regalos entregados por artículo y zona
+# ---------------------------------------------------------------------------
+def test_la_matriz_cuenta_los_regalos_por_articulo_y_zona():
+    inv = construir_inventario(
+        [
+            ("NORTE", "TIPO1", "ART-1", "Taza", 10),
+            ("SUR", "TIPO1", "ART-1", "Taza", 10),
+            ("SUR", "TIPO2", "ART-2", "Polo", 10),
+        ]
+    )
+    tdas = construir_tiendas(
+        [
+            (1, "T1", "NORTE", "TIPO1"),
+            (2, "T2", "NORTE", "TIPO1"),
+            (3, "T3", "SUR", "TIPO1"),
+            (4, "T4", "SUR", "TIPO2"),
+        ]
+    )
+
+    asignaciones, _, _, _ = ejecutar_asignacion(inv, tdas, "Sobrantes")
+    matriz = asignaciones.attrs["matriz_zonas"]
+
+    fila = matriz[matriz["Artículo"] == "ART-1"].iloc[0]
+    assert int(fila["NORTE"]) == 2
+    assert int(fila["SUR"]) == 1
+    assert int(fila["TOTAL"]) == 3
+    assert fila["Tamaño"] == "TIPO1"
+
+
+def test_la_matriz_cierra_con_los_totales_por_zona():
+    inv = construir_inventario(
+        [
+            ("NORTE", "TIPO1", "ART-1", "Taza", 10),
+            ("SUR", "TIPO1", "ART-2", "Polo", 10),
+        ]
+    )
+    tdas = construir_tiendas(
+        [
+            (1, "T1", "NORTE", "TIPO1"),
+            (2, "T2", "SUR", "TIPO1"),
+            (3, "T3", "SUR", "TIPO1"),
+        ]
+    )
+
+    asignaciones, _, _, _ = ejecutar_asignacion(inv, tdas, "Sobrantes")
+    matriz = asignaciones.attrs["matriz_zonas"]
+
+    pie = matriz.iloc[-1]
+    assert pie["Artículo"] == "TOTAL"
+    assert int(pie["NORTE"]) == 1
+    assert int(pie["SUR"]) == 2
+    entregados = regalos_asignados(asignaciones)
+    assert int(pie["TOTAL"]) == entregados
+
+
+def test_la_matriz_atribuye_el_adicional_a_su_propio_tamano():
+    """El tipo no se deduce de la ranura: viene de cómo se sirvió el regalo."""
+    inv = construir_inventario(
+        [
+            ("A", "TIPO1", "ART-1", "Taza", 5),
+            ("A", "TIPO2", "ART-2", "Polo", 5),
+        ]
+    )
+    tdas = construir_tiendas([(1, "Tienda A", "A", "TIPO1", "TIPO2")])
+
+    asignaciones, _, _, _ = ejecutar_asignacion(inv, tdas, "Sobrantes")
+    matriz = asignaciones.attrs["matriz_zonas"]
+
+    tamanos = dict(zip(matriz["Artículo"], matriz["Tamaño"]))
+    assert tamanos["ART-1"] == "TIPO1"
+    assert tamanos["ART-2"] == "TIPO2"
+
+
+def test_la_matriz_atribuye_bien_cuando_el_adicional_ocupa_la_primera_ranura():
+    """Sin stock del principal, REGALO_1 lleva el adicional: el tamaño es el suyo."""
+    inv = construir_inventario([("A", "TIPO2", "ART-2", "Polo", 5)])
+    tdas = construir_tiendas([(1, "Tienda A", "A", "TIPO1", "TIPO2")])
+
+    asignaciones, _, _, _ = ejecutar_asignacion(inv, tdas, "Sobrantes")
+    matriz = asignaciones.attrs["matriz_zonas"]
+
+    assert asignaciones.loc[0, "REGALO_1"] == "ART-2"
+    assert matriz.iloc[0]["Tamaño"] == "TIPO2"
+
+
+def test_la_matriz_queda_vacia_si_no_se_entrego_nada():
+    inv = construir_inventario([("A", "TIPO9", "ART-9", "Gorra", 5)])
+    tdas = construir_tiendas([(1, "Tienda A", "A", "TIPO1")])
+
+    asignaciones, _, _, _ = ejecutar_asignacion(inv, tdas, "Sobrantes")
+
+    assert asignaciones.attrs["matriz_zonas"].empty
+
+
+def test_el_excel_incluye_la_hoja_de_regalos_por_zona():
+    inv = construir_inventario([("A", "TIPO1", "ART-1", "Taza", 5)])
+    tdas = construir_tiendas([(1, "Tienda A", "A", "TIPO1")])
+
+    _, _, _, excel_bytes = ejecutar_asignacion(inv, tdas, "Sobrantes")
+
+    libro = load_workbook(io.BytesIO(excel_bytes))
+    assert "RegalosPorZona" in libro.sheetnames
+    assert libro["RegalosPorZona"]["A1"].value == "Artículo"

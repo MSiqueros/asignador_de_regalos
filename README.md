@@ -173,6 +173,16 @@ Hoja **`Asignacion`** — todas las columnas del archivo de tiendas, más:
 | `DESC_REGALO_2` | Descripción del segundo artículo                |
 | `NOTAS`         | Asignación parcial, o el motivo de no recibir nada |
 
+Hoja **`RegalosPorZona`** — la tabla dinámica de lo entregado: una fila por
+artículo (con su tamaño y descripción), una columna por zona, el total por
+artículo a la derecha y el total por zona en la última fila. Se ordena de
+mayor a menor entrega. Es la tabla que antes se armaba a mano sobre la hoja
+de asignación.
+
+> El tamaño de cada regalo se registra **en el momento de servirlo**, no se
+> deduce de la ranura: cuando una tienda se queda sin su regalo principal, el
+> adicional ocupa `REGALO_1` y atribuirlo al tamaño de la tienda sería un error.
+
 Hoja **`InventarioRestante`** — el stock que quedó sin repartir, más una
 columna `UnidadesEntregadas` con lo que salió de cada fila en esta corrida.
 
