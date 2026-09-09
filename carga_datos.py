@@ -28,6 +28,13 @@ TDAS_COLUMNAS = {
     "TipoRegalo": ("TAMAÑO", "TIPOREGALO"),
 }
 
+# Columnas que enriquecen la asignación pero cuya ausencia no invalida el
+# archivo: si no están, se crean vacías y el proceso continúa.
+TDAS_COLUMNAS_OPCIONALES = {
+    # Tipo de regalo del segundo obsequio. Vacío ⇒ la tienda recibe uno solo.
+    "TipoRegaloAdicional": ("REGALO ADICIONAL", "TIPO REGALO ADICIONAL"),
+}
+
 # Fila de encabezado de cada archivo (0-indexada).
 FILA_ENCABEZADO_INVENTARIO = 2
 FILA_ENCABEZADO_TIENDAS = 0
@@ -40,8 +47,12 @@ def normalizar_encabezado(nombre):
     return "".join(texto.split()).replace("_", "").replace("-", "").upper()
 
 
-def preparar_dataframe(df, columnas, nombre_archivo):
+def preparar_dataframe(df, columnas, nombre_archivo, opcionales=None):
     """Valida duplicados, renombra columnas y detecta las que falten.
+
+    `opcionales` usa el mismo formato que `columnas`, pero su ausencia no es un
+    error: la columna se crea vacía y su nombre queda en
+    `df.attrs["columnas_opcionales_ausentes"]`.
 
     Devuelve (df_preparado, errores). Si `errores` no está vacío, el primer
     elemento es el mensaje principal y `df_preparado` es None.
@@ -87,7 +98,30 @@ def preparar_dataframe(df, columnas, nombre_archivo):
         errores.append(f"Columnas encontradas: {list(df.columns)}")
         return None, errores
 
-    return df.rename(columns=renombres), []
+    df = df.rename(columns=renombres)
+
+    # Las opcionales se resuelven después de las obligatorias: si falta alguna
+    # se crea vacía y se deja constancia, para que la UI pueda avisarlo.
+    ausentes = []
+    for destino, alias in (opcionales or {}).items():
+        if destino in df.columns:
+            continue
+        origen = next(
+            (
+                presentes[normalizar_encabezado(a)]
+                for a in alias
+                if normalizar_encabezado(a) in presentes
+            ),
+            None,
+        )
+        if origen is None:
+            df[destino] = ""
+            ausentes.append(destino)
+        else:
+            df = df.rename(columns={origen: destino})
+
+    df.attrs["columnas_opcionales_ausentes"] = ausentes
+    return df, []
 
 
 def elegir_hoja(libro, columnas, fila_encabezado):
@@ -115,14 +149,17 @@ def elegir_hoja(libro, columnas, fila_encabezado):
     return mejor
 
 
-def _cargar(archivo, columnas, fila_encabezado, nombre_archivo):
+def _cargar(archivo, columnas, fila_encabezado, nombre_archivo, opcionales=None):
     """Abre el libro una sola vez, elige la hoja correcta y aplica el mapeo."""
+    # Las opcionales también puntúan al elegir la hoja: son señal de cuál es
+    # la buena, no ruido a ignorar.
+    columnas_puntaje = {**columnas, **(opcionales or {})}
     with pd.ExcelFile(archivo) as libro:
         hojas = list(libro.sheet_names)
-        hoja = elegir_hoja(libro, columnas, fila_encabezado)
+        hoja = elegir_hoja(libro, columnas_puntaje, fila_encabezado)
         df = pd.read_excel(libro, sheet_name=hoja, header=fila_encabezado)
 
-    df, errores = preparar_dataframe(df, columnas, nombre_archivo)
+    df, errores = preparar_dataframe(df, columnas, nombre_archivo, opcionales)
     if df is not None:
         # Informativo para la UI: deja constancia de qué hoja se leyó.
         df.attrs["hoja"] = hoja
@@ -138,4 +175,10 @@ def cargar_inventario(archivo):
 
 def cargar_tiendas(archivo):
     """Lee el Excel de tiendas y devuelve (df, errores)."""
-    return _cargar(archivo, TDAS_COLUMNAS, FILA_ENCABEZADO_TIENDAS, "Tiendas")
+    return _cargar(
+        archivo,
+        TDAS_COLUMNAS,
+        FILA_ENCABEZADO_TIENDAS,
+        "Tiendas",
+        TDAS_COLUMNAS_OPCIONALES,
+    )

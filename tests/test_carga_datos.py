@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from carga_datos import (
     INV_COLUMNAS,
     TDAS_COLUMNAS,
+    TDAS_COLUMNAS_OPCIONALES,
     cargar_inventario,
     cargar_tiendas,
     normalizar_encabezado,
@@ -285,3 +286,74 @@ def test_flujo_completo_desde_los_excel_hasta_la_asignacion():
     assert int(inv_rest["CantidadDisponible"].sum()) == 2
     assert "Sin excepciones." in reporte
     assert excel_bytes[:2] == b"PK"  # un .xlsx es un zip
+
+
+# ---------------------------------------------------------------------------
+# Columnas opcionales
+# ---------------------------------------------------------------------------
+def test_mapea_la_columna_de_regalo_adicional_cuando_esta_presente():
+    df = pd.DataFrame(
+        [
+            {
+                "CODIGO": 1,
+                "NOMBRE_COLABORADOR": "Tienda A",
+                "TERRITORIO": "LIMA SUR",
+                "tamaño": "mediana",
+                "Regalo adicional": "pequeña",
+            }
+        ]
+    )
+
+    resultado, errores = preparar_dataframe(
+        df, TDAS_COLUMNAS, "Tiendas", TDAS_COLUMNAS_OPCIONALES
+    )
+
+    assert errores == []
+    assert resultado.loc[0, "TipoRegaloAdicional"] == "pequeña"
+    assert resultado.attrs["columnas_opcionales_ausentes"] == []
+
+
+def test_la_columna_opcional_ausente_no_es_un_error():
+    """Una plantilla vieja debe procesarse igual, con la columna vacía."""
+    df = pd.DataFrame(
+        [
+            {
+                "CODIGO": 1,
+                "NOMBRE_COLABORADOR": "Tienda A",
+                "TERRITORIO": "LIMA SUR",
+                "tamaño": "mediana",
+            }
+        ]
+    )
+
+    resultado, errores = preparar_dataframe(
+        df, TDAS_COLUMNAS, "Tiendas", TDAS_COLUMNAS_OPCIONALES
+    )
+
+    assert errores == []
+    assert resultado.loc[0, "TipoRegaloAdicional"] == ""
+    assert resultado.attrs["columnas_opcionales_ausentes"] == ["TipoRegaloAdicional"]
+
+
+def test_cargar_tiendas_lee_el_regalo_adicional_del_excel():
+    archivo = construir_xlsx(
+        encabezados_de(TDAS_COLUMNAS) + ["Regalo adicional"],
+        [[1, "Tienda A", "LIMA SUR", "mediana", "pequeña"]],
+    )
+
+    tdas, errores = cargar_tiendas(archivo)
+
+    assert errores == []
+    assert tdas.loc[0, "TipoRegaloAdicional"] == "pequeña"
+
+
+def test_cargar_tiendas_acepta_una_plantilla_sin_regalo_adicional():
+    archivo = construir_xlsx(
+        encabezados_de(TDAS_COLUMNAS), [[1, "Tienda A", "LIMA SUR", "mediana"]]
+    )
+
+    tdas, errores = cargar_tiendas(archivo)
+
+    assert errores == []
+    assert tdas.loc[0, "TipoRegaloAdicional"] == ""
+    assert "TipoRegaloAdicional" in tdas.attrs["columnas_opcionales_ausentes"]
