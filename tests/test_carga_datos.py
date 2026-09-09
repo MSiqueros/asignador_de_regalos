@@ -367,7 +367,11 @@ def test_la_columna_opcional_en_blanco_queda_vacia_y_no_nan():
 
 
 def test_la_columna_opcional_con_el_nombre_interno_no_se_duplica():
-    """Si el Excel ya trae 'TipoRegaloAdicional', renombrar crearía un duplicado."""
+    """Si el Excel ya trae 'TipoRegaloAdicional', renombrar crearía un duplicado.
+
+    La segunda fila viene sin valor: aun por este camino, el vacío tiene que
+    quedar normalizado al mismo centinela que en las otras ramas.
+    """
     df = pd.DataFrame(
         [
             {
@@ -376,7 +380,14 @@ def test_la_columna_opcional_con_el_nombre_interno_no_se_duplica():
                 "TERRITORIO": "LIMA SUR",
                 "tamaño": "mediana",
                 "TipoRegaloAdicional": "pequeña",
-            }
+            },
+            {
+                "CODIGO": 2,
+                "NOMBRE_COLABORADOR": "Tienda B",
+                "TERRITORIO": "LIMA SUR",
+                "tamaño": "grande",
+                "TipoRegaloAdicional": None,
+            },
         ]
     )
 
@@ -387,6 +398,7 @@ def test_la_columna_opcional_con_el_nombre_interno_no_se_duplica():
     assert errores == []
     assert not resultado.columns.duplicated().any()
     assert resultado.loc[0, "TipoRegaloAdicional"] == "pequeña"
+    assert resultado.loc[1, "TipoRegaloAdicional"] == ""
     assert resultado.attrs["columnas_opcionales_ausentes"] == []
 
 
