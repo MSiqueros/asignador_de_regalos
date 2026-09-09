@@ -60,16 +60,23 @@ Las filas con cantidad igual o menor a cero se descartan antes de asignar.
 
 > El encabezado va en la **fila 1**, sin filas previas.
 
-| Nombre interno | Columna en el Excel      | Significado                       |
-| -------------- | ------------------------ | --------------------------------- |
-| `IDTienda`     | `CODIGO`                 | Identificador de la tienda        |
-| `NombreTienda` | `NOMBRE_COLABORADOR`     | Nombre de la tienda               |
-| `Zona`         | `TERRITORIO` o `ZONA`    | Zona a la que pertenece           |
-| `TipoRegalo`   | `TAMAÑO` o `TIPOREGALO`  | Segmento de la tienda             |
+| Nombre interno        | Columna en el Excel      | Significado                          |
+| --------------------- | ------------------------ | ------------------------------------ |
+| `IDTienda`            | `CODIGO`                 | Identificador de la tienda           |
+| `NombreTienda`        | `NOMBRE_COLABORADOR`     | Nombre de la tienda                  |
+| `Zona`                | `TERRITORIO` o `ZONA`    | Zona a la que pertenece              |
+| `TipoRegalo`          | `TAMAÑO` o `TIPOREGALO`  | Segmento de la tienda                |
+| `TipoRegaloAdicional` | `REGALO ADICIONAL`       | Tipo del segundo regalo *(opcional)* |
 
 > ⚠️ La plantilla de tiendas llama **`tamaño`** al mismo concepto que el
 > inventario llama **`TIPOREGALO`**: es la columna con la que se cruzan los dos
 > archivos. Ambos nombres se aceptan.
+
+> **`Regalo adicional` es opcional.** Si la columna no está, o la celda está
+> vacía, la tienda recibe un solo regalo. Si trae un tipo —con el mismo
+> vocabulario que `tamaño`— la tienda recibe además un segundo regalo de ese
+> tipo, que puede ser distinto al suyo. Cuando la columna falta por completo,
+> la app lo avisa en pantalla y procesa igual.
 
 ### Sobre las fechas
 
@@ -93,6 +100,11 @@ comparación ignora mayúsculas, espacios sobrantes y **acentos**, de modo que
 `HUAROCHIRI`. Los valores originales se conservan intactos en el archivo de
 salida.
 
+Una tienda con `Regalo adicional` cruza **dos veces**: su `tamaño` contra el
+`TIPOREGALO` del inventario para el primer regalo, y su `Regalo adicional`
+contra el mismo campo para el segundo. Los dos cruces se hacen dentro de su
+zona.
+
 > ⚠️ Fuera de eso, el cruce es **exacto**: no hay tabla de sinónimos. Si el
 > inventario dice `MEDIANO` y las tiendas dicen `MEDIANA`, no cruzan y esas
 > tiendas se reportan sin asignación. Los dos archivos deben usar el mismo
@@ -115,21 +127,35 @@ Definen qué artículos se consumen primero dentro de cada tipo de regalo.
 
 ### Regalos por tienda
 
-Se elige 1 o 2. Con dos regalos, se busca **darle variedad a la tienda**:
+La cantidad **no se elige en la interfaz**: la define la columna
+`Regalo adicional` de cada tienda. El primer regalo sale del pozo de
+inventario de su `tamaño`; el adicional, del pozo del tipo que nombre esa
+columna.
+
+> ⚠️ **El primer regalo de toda tienda tiene prioridad sobre cualquier regalo
+> adicional.** La asignación recorre cada zona dos veces: en la primera pasada
+> todas las tiendas toman su primer regalo, y solo en la segunda —con el stock
+> que haya sobrado— se reparten los adicionales. Así, cuando el stock no
+> alcanza, lo que se pierde son segundos regalos y nunca el primero de otra
+> tienda.
 
 ```mermaid
 flowchart TD
-    A["Tienda pide 2 regalos"] --> B{"¿Hay 2 artículos distintos<br/>con stock?"}
-    B -- Sí --> C["Entrega 2 artículos distintos"]
-    B -- No --> D{"¿Algún artículo tiene<br/>2 o más unidades?"}
-    D -- Sí --> E["Entrega 2 unidades<br/>del mismo artículo"]
-    D -- No --> F{"¿Quedan 2 unidades sueltas<br/>del mismo artículo?"}
-    F -- Sí --> E
-    F -- No --> G["Asignación parcial:<br/>1 regalo + nota"]
+    A["Zona con stock"] --> B["PASADA 1<br/>cada tienda toma 1 unidad<br/>del pozo de su tamaño"]
+    B --> C["PASADA 2<br/>las tiendas con 'Regalo adicional'<br/>toman del pozo de ese tipo"]
+    C --> D{"¿Qué consiguió<br/>la tienda?"}
+    D -- "Los 2" --> E["REGALO_1 y REGALO_2"]
+    D -- "Solo uno" --> F["Asignación parcial:<br/>el regalo obtenido + nota"]
+    D -- "Ninguno" --> G["Sin asignación:<br/>motivo en NOTAS y en el reporte"]
 ```
 
-Si no alcanza ni para uno, la tienda queda sin asignación y el motivo se
-registra en la columna `NOTAS` y en el reporte.
+Dentro de una misma pasada no hay reserva previa: si el stock de un tipo se
+agota, las tiendas que quedan al final del archivo son las que se quedan sin
+ese regalo.
+
+Cuando el tipo adicional es **el mismo** que el de la tienda, se busca darle
+variedad: el segundo regalo será un artículo distinto del primero, y solo se
+repite el mismo artículo si no hay otro con stock.
 
 ---
 
@@ -143,7 +169,7 @@ Hoja **`Asignacion`** — todas las columnas del archivo de tiendas, más:
 | --------------- | ----------------------------------------------- |
 | `REGALO_1`      | Código del primer artículo asignado             |
 | `DESC_REGALO_1` | Descripción del primer artículo                 |
-| `REGALO_2`      | Código del segundo artículo (si aplica)         |
+| `REGALO_2`      | Código del segundo artículo (solo si pidió regalo adicional) |
 | `DESC_REGALO_2` | Descripción del segundo artículo                |
 | `NOTAS`         | Asignación parcial, o el motivo de no recibir nada |
 
@@ -152,8 +178,9 @@ Hoja **`InventarioRestante`** — el stock que quedó sin repartir.
 ### `reporte.txt`
 
 Resumen de la corrida: estrategia usada, tiendas procesadas, tiendas con
-asignación, asignaciones parciales, unidades restantes, advertencias de
-fechas y el detalle de cada excepción.
+asignación, asignaciones parciales, tiendas que piden regalo adicional,
+regalos adicionales entregados, unidades restantes, advertencias de fechas y
+el detalle de cada excepción.
 
 ---
 
@@ -165,7 +192,7 @@ código que está corriendo:
 
 ```
 ASIGNADOR DE REGALOS                        ● OPERATIVO
-e900b18  v2.0.0  |  activo desde 07/09/2026 11:20 (America/Lima)
+e900b18  v3.0.0  |  activo desde 07/09/2026 11:20 (America/Lima)
 [python 3.12.2] [streamlit 1.49.0] [pandas 2.2.3] [openpyxl 3.1.5]
 ```
 
