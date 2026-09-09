@@ -52,12 +52,19 @@ del usuario, que trabajará con la plantilla ya normalizada.
 
 ## Arquitectura
 
-La restricción de diseño es que el motor deje de razonar en "cuántos regalos"
-y pase a razonar en "qué tipos pide esta tienda". Cada tienda aporta una lista
-de tipos solicitados —`[tamaño]` o `[tamaño, adicional]`— y el motor sirve una
-unidad por cada elemento de la lista. Con eso hay un solo camino de código en
-vez de dos ramas (`n == 1` / `n == 2`), y un eventual tercer regalo sería un
-elemento más en la lista, sin tocar la estructura.
+La restricción de diseño es doble. Primero, el motor deja de razonar en
+"cuántos regalos" y pasa a razonar en "qué tipo pide esta tienda en cada
+ronda": el primer regalo sale del pozo de su `tamaño` y el adicional del pozo
+que nombra su celda `Regalo adicional`.
+
+Segundo, y esto define la forma del motor: **los primeros regalos tienen
+prioridad absoluta sobre los adicionales**. Por eso la asignación se organiza
+en dos pasadas sucesivas sobre las tiendas de cada zona, en vez de servirle a
+cada tienda todo lo que pide de una sola vez. La unidad de trabajo pasa a ser
+"entregar un regalo de un tipo", y las dos pasadas la invocan con distinto
+pozo. Con eso hay un solo camino de código en lugar de dos ramas
+(`n == 1` / `n == 2`), y una eventual tercera ronda de regalos sería una
+pasada más, sin cambiar la estructura.
 
 Los cuatro módulos conservan sus responsabilidades actuales:
 `carga_datos.py` mapea y valida sin saber de Streamlit, `asignador_regalos.py`
@@ -107,33 +114,47 @@ la misma `clave_normalizada` que las demás (sin acentos, sin espacios,
 mayúsculas) a partir de `TipoRegaloAdicional`. Se elimina junto a las otras
 auxiliares antes de exportar.
 
-**Tipos solicitados por tienda:**
+**Dos pasadas.** El primer regalo de **todas** las tiendas tiene prioridad
+sobre cualquier regalo adicional. Dentro de cada zona se recorre a las tiendas
+dos veces:
 
-```python
-tipos = [tipo_key]
-if tipo_adic_key:            # cadena vacía o solo espacios ⇒ un solo regalo
-    tipos.append(tipo_adic_key)
-```
+- **Pasada 1 — primeros regalos.** Cada tienda toma una unidad del pozo de su
+  `tamaño`. Ninguna tienda toca todavía el pozo del adicional.
+- **Pasada 2 — regalos adicionales.** Solo las tiendas con la celda
+  `Regalo adicional` no vacía toman una unidad del pozo de ese tipo, del stock
+  que haya sobrado de la pasada 1.
+
+Así, si el stock de un tipo no alcanza, lo que se pierde son regalos
+adicionales y nunca el primer regalo de otra tienda. Como los pozos de
+inventario están acotados por zona y ninguna zona compite con otra por stock,
+hacer las dos pasadas **dentro de cada zona** da exactamente el mismo
+resultado que hacerlas globalmente sobre todas las zonas; se hace por zona
+porque conserva la estructura del bucle actual.
+
+Una tienda cuyo primer regalo falló en la pasada 1 **igual participa** en la
+pasada 2: llegado ese punto ya no hay primeros regalos en riesgo, así que
+negarle el adicional solo dejaría stock sin repartir.
 
 **Función de asignación.** `intentar_asignar_para_tienda(inv_tipo, n_regalos)`
-se reemplaza por:
+—que servía los dos regalos de una vez— ya no calza con el esquema de dos
+pasadas. Se reemplaza por una función que entrega **un** regalo:
 
 ```python
-asignar_tipos(inv_por_tipo, tipos)
-    → (codigos, descripciones, tipos_sin_stock, inv_por_tipo_actualizado)
+tomar_regalo(inv_tipo, codigos_excluidos=())
+    → (ok, codigo, descripcion, inv_tipo_actualizado)
 ```
 
-Recorre los tipos pedidos en orden y toma una unidad del pozo de cada uno. Un
-tipo que no existe en la zona, o cuyo pozo está agotado, se acumula en
-`tipos_sin_stock` y no interrumpe el resto. No muta los DataFrames recibidos.
+Toma una unidad del pozo recibido, prefiriendo un artículo que no esté en
+`codigos_excluidos`. No muta el DataFrame recibido. La pasada 1 la llama sin
+exclusiones; la pasada 2 la llama pasándole el código que la tienda ya
+recibió.
 
-Cuando dos pedidos caen en el **mismo** pozo (tienda `pequeña` con adicional
-`pequeña`) se conserva la preferencia de variedad que ya existe hoy, en el
-mismo orden de intentos:
+Ese parámetro es lo que conserva la **variedad** cuando el tipo adicional es
+igual al de la tienda (una `pequeña` con adicional `pequeña`), con el mismo
+orden de preferencia que hoy:
 
-1. Dos artículos distintos, una unidad de cada uno.
-2. Dos unidades del mismo artículo.
-3. Dos filas de stock del mismo artículo, una unidad de cada una.
+1. Un artículo distinto del ya entregado.
+2. Si no hay otro artículo con stock, se repite el mismo.
 
 **Llenado de ranuras.** Los regalos conseguidos ocupan `REGALO_1` y `REGALO_2`
 en el orden en que se obtuvieron, sin dejar huecos. Por lo tanto `REGALO_1`
@@ -151,12 +172,17 @@ que se calcula como `REGALO_1 != ""`.
 | No se consiguió nada | Motivo nombrando el o los tipos que faltaron y la zona | Sí |
 | Zona sin ningún inventario | `No hay inventario disponible en la zona X` (igual que hoy) | Sí |
 
-**Orden de servicio.** No cambia respecto de hoy: se recorre zona por zona y,
-dentro de cada zona, tienda por tienda en el orden del archivo. Cada tienda
-toma **los dos regalos que pide antes de pasar a la siguiente**; no hay reserva
-previa ni optimización global. En consecuencia, si el stock de un tipo se
-agota, las tiendas que quedan al final del archivo son las que reciben la
-asignación parcial. Es el mismo criterio que rige hoy con `n_regalos = 2`.
+**Orden de servicio.** Se recorre zona por zona y, dentro de cada zona, se
+hacen las dos pasadas descritas arriba, cada una recorriendo las tiendas en el
+orden del archivo. No hay reserva previa ni optimización global: dentro de una
+misma pasada, si el stock de un tipo se agota, las tiendas que quedan al final
+del archivo son las que se quedan sin ese regalo.
+
+Esto **cambia respecto de hoy**. Con el `n_regalos = 2` actual, una tienda del
+comienzo del archivo se lleva dos unidades mientras una del final puede
+quedarse sin ninguna. Con las dos pasadas, esa segunda unidad solo se entrega
+una vez que todas las tiendas de la zona tuvieron su oportunidad de recibir la
+primera.
 
 **Reporte.** La línea `NumeroRegalosPorTienda: {n}` ya no tiene sentido y se
 reemplaza por dos (los números son ilustrativos):
@@ -209,6 +235,9 @@ La UI y el reporte leen de ahí. Es el mismo mecanismo que ya se usa para
 - Se agrega el chequeo **"Columna opcional ausente"**: un DataFrame de tiendas
   sin `TipoRegaloAdicional` debe procesarse sin error, con todas las tiendas en
   un regalo.
+- Se agrega el chequeo **"Prioridad del primer regalo"**, que reproduce el caso
+  de las dos tiendas y dos unidades descrito en las pruebas. Es el que confirma
+  desde el despliegue que la regla de prioridad está activa.
 - `VERSION` sube a `3.0.0`: cambia el contrato del archivo de entrada y la
   firma pública del motor.
 
@@ -217,8 +246,18 @@ La UI y el reporte leen de ahí. Es el mismo mecanismo que ya se usa para
 Se actualizan todas las llamadas existentes a `ejecutar_asignacion` para la
 firma sin `n_regalos`, y se agregan casos para:
 
+- **Prioridad del primer regalo** (la prueba central del cambio): misma zona,
+  un tipo `T1` con **2 unidades** de stock y dos tiendas de tipo `T1`, donde la
+  **primera** del archivo pide además un adicional de `T1`. El resultado
+  esperado es una unidad para cada tienda: la primera con su regalo y una nota
+  de parcial por el adicional, la segunda con su regalo. La lógica anterior le
+  daba las dos unidades a la primera tienda y dejaba a la segunda sin nada.
+- **Prioridad entre zonas independientes:** el resultado de hacer las dos
+  pasadas por zona coincide con hacerlas globalmente.
 - Regalo adicional de un tipo **distinto**: un artículo de cada pozo.
 - Regalo adicional del **mismo** tipo: dos artículos distintos (variedad).
+- Tienda **sin primer regalo pero con adicional disponible**: participa en la
+  pasada 2 y recibe el adicional en `REGALO_1`.
 - Parcial por falta del **adicional**: `REGALO_1` lleno, `REGALO_2` vacío, nota.
 - Parcial por falta del **principal**: `REGALO_1` lleno con el adicional, nota.
 - Celda **vacía** y celda con **solo espacios**: un solo regalo, sin nota.
@@ -234,8 +273,10 @@ firma sin `n_regalos`, y se agregan casos para:
   `REGALO ADICIONAL`, marcada como opcional.
 - La sección "Regalos por tienda" se reescribe: la cantidad ya no se elige en
   la interfaz, sale de la columna. Su diagrama se reemplaza por uno que
-  refleje los dos pozos independientes y los tres desenlaces (dos regalos,
-  parcial, sin asignación).
+  refleje las **dos pasadas**, los dos pozos independientes y los tres
+  desenlaces (dos regalos, parcial, sin asignación).
+- Se documenta explícitamente la regla de prioridad: nadie recibe un segundo
+  regalo mientras queden tiendas de su zona sin el primero.
 - Se corrige la sección "Cómo asigna" para mencionar el segundo pozo.
 - Se quita la mención al selector de 1 ó 2 regalos.
 
@@ -250,10 +291,10 @@ flowchart TD
     B --> E["ejecutar_asignacion(inv, tdas, estrategia)"]
     D --> E
     E --> F["por zona: pozos de inventario por tipo"]
-    F --> G["por tienda: tipos = [tamaño] (+ adicional)"]
-    G --> H["asignar_tipos(): una unidad por tipo pedido"]
+    F --> G["PASADA 1: toda tienda toma 1 unidad<br/>del pozo de su tamaño"]
+    G --> H["PASADA 2: las tiendas con Regalo adicional<br/>toman del pozo de ese tipo, con lo que sobró"]
     H --> I["REGALO_1 / REGALO_2 en orden de obtención"]
-    H --> J["tipos_sin_stock → NOTAS o excepción"]
+    H --> J["tipos sin stock → NOTAS o excepción"]
     I --> K["asignacion_final.xlsx + reporte.txt"]
     J --> K
 ```
