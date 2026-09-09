@@ -286,7 +286,7 @@ def test_flujo_completo_desde_los_excel_hasta_la_asignacion():
     assert asignaciones["REGALO_2"].ne("").all()
     # 2 tiendas x 2 regalos = 4 unidades entregadas de 6 disponibles
     assert int(inv_rest["CantidadDisponible"].sum()) == 2
-    assert "Sin excepciones." in reporte
+    assert "Sin excepciones" in reporte
     assert excel_bytes[:2] == b"PK"  # un .xlsx es un zip
 
 

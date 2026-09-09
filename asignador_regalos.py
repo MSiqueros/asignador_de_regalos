@@ -7,6 +7,8 @@ import pandas as pd
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from carga_datos import normalizar_encabezado
+
 # Formato de fecha que entrega el sistema de origen. Se intenta primero y,
 # si no calza, se recurre a un parseo genérico (ver `parsear_fechas`).
 FORMATO_FECHA_ORIGEN = "%m/%d/%Y %I:%M:%S %p"
@@ -19,6 +21,21 @@ COL_TIPO_KEY = "_TipoKey"
 COL_TIPO_ADIC_KEY = "_TipoAdicKey"
 
 COLUMNAS_ASIGNACION = ["REGALO_1", "DESC_REGALO_1", "REGALO_2", "DESC_REGALO_2", "NOTAS"]
+
+# El export de inventario repite la misma cantidad en varias columnas.
+# `preparar_dataframe` solo renombra la primera que encuentra, así que las demás
+# llegarían a la salida con el valor original y contradirían al stock ya
+# descontado: el usuario ve 'CantidadDisponible 5' junto a 'SALDO 39'.
+# Se sincronizan por nombre normalizado, no por posición.
+COLUMNAS_ESPEJO_STOCK = ("SALDO",)
+COLUMNAS_ESPEJO_ENTREGADAS = ("CANTIDADENTREGADA", "CONTIDADENTREGADA")
+
+# Columna propia, siempre presente: cuántas unidades salieron de cada fila de
+# stock en esta corrida. No depende de que el archivo de origen traiga la suya.
+COL_ENTREGADAS = "UnidadesEntregadas"
+
+# Cuántas tiendas se listan por motivo antes de resumir el resto en un conteo.
+MAX_EJEMPLOS_POR_MOTIVO = 5
 
 ANCHO_MINIMO_COLUMNA = 10
 ANCHO_MAXIMO_COLUMNA = 60
@@ -172,6 +189,31 @@ def servir_de_pozo(inv_por_tipo, tipo_key, codigos_excluidos=()):
     return ok, codigo, descripcion
 
 
+def sincronizar_columnas_espejo(df_inv, entregadas):
+    """Pone al día las columnas del origen que repiten la cantidad.
+
+    `entregadas` es la serie de unidades que salieron de cada fila. Sin esto,
+    columnas como 'SALDO' o 'CANTIDADENTREGADA' quedan con el valor previo a la
+    asignación y contradicen a 'CantidadDisponible'.
+
+    Las de entregadas se **suman**, no se pisan: si el archivo ya traía un
+    conteo de un reparto anterior, esta corrida se acumula sobre él.
+    """
+    df = df_inv.copy()
+    df[COL_ENTREGADAS] = entregadas.reindex(df.index).fillna(0).astype("Int64")
+
+    for columna in df.columns:
+        if columna == COL_ENTREGADAS:
+            continue
+        clave = normalizar_encabezado(columna)
+        if clave in COLUMNAS_ESPEJO_STOCK:
+            df[columna] = df["CantidadDisponible"]
+        elif clave in COLUMNAS_ESPEJO_ENTREGADAS:
+            previas = pd.to_numeric(df[columna], errors="coerce").fillna(0)
+            df[columna] = (previas.astype("Int64") + df[COL_ENTREGADAS]).astype("Int64")
+    return df
+
+
 def _dar_formato_hoja(hoja):
     """Ajusta el ancho de las columnas y resalta la fila de encabezado."""
     for indice, columna in enumerate(hoja.columns, start=1):
@@ -188,6 +230,134 @@ def _dar_formato_hoja(hoja):
         celda.fill = relleno
         celda.font = fuente
     hoja.freeze_panes = "A2"
+
+
+# ============================
+# Reporte de texto
+# ============================
+ANCHO_REPORTE = 66
+
+
+def _titulo(texto):
+    return ["=" * ANCHO_REPORTE, f"  {texto}", "=" * ANCHO_REPORTE]
+
+
+def _seccion(texto):
+    """Encabezado de sección con la regla completando el ancho fijo."""
+    prefijo = f"---- {texto} "
+    return ["", prefijo + "-" * max(ANCHO_REPORTE - len(prefijo), 0)]
+
+
+def _dato(etiqueta, valor, total=None, sangria=2):
+    """Línea 'etiqueta ....... valor', con porcentaje si se da un total."""
+    porcentaje = ""
+    if total:
+        porcentaje = f"  ({100 * valor / total:5.1f}%)"
+    izquierda = " " * sangria + etiqueta
+    return f"{izquierda:<44}{valor:>8}{porcentaje}"
+
+
+def _redactar_reporte(
+    *,
+    estrategia,
+    tiendas,
+    asignadas,
+    parciales,
+    piden_adicional,
+    adicionales_entregados,
+    total_regalos,
+    restantes,
+    fechas_no_reconocidas,
+    excepciones,
+):
+    """Arma el reporte de texto legible de la corrida.
+
+    Se agrupa por secciones y las excepciones se consolidan por motivo: con
+    cientos de tiendas sin asignación, la lista plana era ilegible y escondía
+    que casi siempre se trata de unos pocos motivos repetidos.
+    """
+    completas = asignadas - parciales
+    sin_asignacion = tiendas - asignadas
+
+    lineas = _titulo("ASIGNADOR DE REGALOS  ·  REPORTE DE EJECUCIÓN")
+    lineas += [
+        f"  Fecha de ejecución : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"  Estrategia         : {estrategia}",
+    ]
+
+    lineas += _seccion("COBERTURA DE TIENDAS")
+    lineas += [
+        _dato("Tiendas procesadas", tiendas),
+        _dato("Con asignación completa", completas, tiendas),
+        _dato("Con asignación parcial", parciales, tiendas),
+        _dato("Sin asignación", sin_asignacion, tiendas),
+    ]
+
+    lineas += _seccion("REGALOS ENTREGADOS")
+    lineas += [
+        _dato("Total de regalos entregados", total_regalos),
+        _dato("· primer regalo", asignadas),
+        _dato("· regalo adicional", adicionales_entregados),
+    ]
+    if piden_adicional:
+        lineas += [
+            _dato("Tiendas que piden regalo adicional", piden_adicional),
+            _dato(
+                "Adicionales cubiertos",
+                adicionales_entregados,
+                piden_adicional,
+            ),
+        ]
+    else:
+        lineas.append(
+            "  Ninguna tienda pidió regalo adicional "
+            "(columna 'Regalo adicional' vacía)."
+        )
+
+    lineas += _seccion("INVENTARIO")
+    lineas += [
+        _dato("Unidades entregadas", total_regalos),
+        _dato("Unidades restantes", restantes),
+    ]
+
+    if fechas_no_reconocidas:
+        lineas += _seccion("ADVERTENCIAS")
+        lineas.append(
+            f"  {fechas_no_reconocidas} fecha(s) de ingreso no se pudieron "
+            "interpretar;"
+        )
+        lineas.append("  el orden de las estrategias por fecha puede ser inexacto.")
+
+    lineas += _seccion(f"EXCEPCIONES ({len(excepciones)})")
+    if not excepciones:
+        lineas.append("  Sin excepciones: todas las tiendas recibieron su regalo.")
+    else:
+        por_motivo = {}
+        for e in excepciones:
+            por_motivo.setdefault(e["Motivo"], []).append(e)
+
+        lineas.append(f"  {len(por_motivo)} motivo(s) distinto(s), del más frecuente:")
+        for motivo, casos in sorted(
+            por_motivo.items(), key=lambda kv: len(kv[1]), reverse=True
+        ):
+            lineas += ["", f"  [{len(casos):>4}]  {motivo}"]
+            for e in casos[:MAX_EJEMPLOS_POR_MOTIVO]:
+                lineas.append(
+                    f"          · {e['IDTienda']}  {e['NombreTienda']}  ({e['Zona']})"
+                )
+            if len(casos) > MAX_EJEMPLOS_POR_MOTIVO:
+                lineas.append(
+                    f"          … y {len(casos) - MAX_EJEMPLOS_POR_MOTIVO} tienda(s) "
+                    "más con este mismo motivo."
+                )
+
+        lineas += [
+            "",
+            "  El detalle completo, tienda por tienda, está en la columna NOTAS",
+            "  de la hoja 'Asignacion'.",
+        ]
+
+    return "\n".join(lineas)
 
 
 # ============================
@@ -294,7 +464,10 @@ def ejecutar_asignacion(inv, tdas, estrategia):
             sin_stock = faltantes[idx_tienda]
 
             if not recibidos:
-                etiquetas = " ni ".join(f"'{etiqueta}'" for _, etiqueta in sin_stock)
+                # Si el tipo principal y el adicional coinciden, nombrarlo dos
+                # veces ("'mayorista' ni 'mayorista'") no aporta nada.
+                distintas = list(dict.fromkeys(etiqueta for _, etiqueta in sin_stock))
+                etiquetas = " ni ".join(f"'{etiqueta}'" for etiqueta in distintas)
                 motivo = (
                     f"No hay inventario del tipo {etiquetas} "
                     f"en la zona {rowt['Zona']}"
@@ -338,10 +511,15 @@ def ejecutar_asignacion(inv, tdas, estrategia):
     df_tiendas_final = tdas.drop(
         columns=[COL_ZONA_KEY, COL_TIPO_KEY, COL_TIPO_ADIC_KEY]
     )
-    df_inv_restante = (
+    # Unidades que salieron de cada fila de stock en esta corrida.
+    entregadas_por_fila = inv["CantidadDisponible"] - inv_actualizado[
+        "CantidadDisponible"
+    ]
+    df_inv_restante = sincronizar_columnas_espejo(
         inv_actualizado[inv_actualizado["CantidadDisponible"] > 0]
         .drop(columns=[COL_ZONA_KEY, COL_TIPO_KEY])
-        .copy()
+        .copy(),
+        entregadas_por_fila,
     )
 
     tiendas_asignadas = int(df_tiendas_final["REGALO_1"].ne("").sum())
@@ -355,31 +533,18 @@ def ejecutar_asignacion(inv, tdas, estrategia):
         "parciales": parciales,
     }
 
-    reporte = [
-        "==== REPORTE DE EJECUCIÓN ====",
-        f"Fecha de ejecución: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        f"EstrategiaDePriorizacion: {estrategia}",
-        f"Tiendas procesadas: {len(df_tiendas_final)}",
-        f"Tiendas con asignación: {tiendas_asignadas}",
-        f"Tiendas con asignación parcial: {parciales}",
-        f"Tiendas que piden regalo adicional: {piden_adicional}",
-        f"Regalos adicionales entregados: {adicionales_entregados}",
-        f"Total de regalos asignados: {total_regalos}",
-        f"Unidades restantes en inventario: {int(df_inv_restante['CantidadDisponible'].sum())}",
-    ]
-    if fechas_no_reconocidas:
-        reporte.append(
-            f"ADVERTENCIA: {fechas_no_reconocidas} fecha(s) de ingreso no se "
-            "pudieron interpretar; el orden por fecha puede ser inexacto."
-        )
-    reporte.append("\n---- Excepciones ----")
-    if excepciones:
-        for e in excepciones:
-            reporte.append(
-                f"[{e['Zona']}] {e['IDTienda']} - {e['NombreTienda']}: {e['Motivo']}"
-            )
-    else:
-        reporte.append("Sin excepciones.")
+    reporte = _redactar_reporte(
+        estrategia=estrategia,
+        tiendas=len(df_tiendas_final),
+        asignadas=tiendas_asignadas,
+        parciales=parciales,
+        piden_adicional=piden_adicional,
+        adicionales_entregados=adicionales_entregados,
+        total_regalos=total_regalos,
+        restantes=int(df_inv_restante["CantidadDisponible"].sum()),
+        fechas_no_reconocidas=fechas_no_reconocidas,
+        excepciones=excepciones,
+    )
 
     # 9. Exportar a Excel en memoria con formato
     output = io.BytesIO()
@@ -389,4 +554,4 @@ def ejecutar_asignacion(inv, tdas, estrategia):
         for nombre_hoja in ("Asignacion", "InventarioRestante"):
             _dar_formato_hoja(writer.sheets[nombre_hoja])
 
-    return df_tiendas_final, df_inv_restante, "\n".join(reporte), output.getvalue()
+    return df_tiendas_final, df_inv_restante, reporte, output.getvalue()

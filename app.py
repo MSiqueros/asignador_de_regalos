@@ -164,6 +164,43 @@ def mostrar_errores(errores):
             st.caption(detalle)
 
 
+# Lo que se mira primero al revisar una asignación: quién es la tienda, qué
+# recibió y por qué no recibió más. El resto de la plantilla (latitud, códigos
+# internos) empuja a NOTAS fuera de la pantalla si se deja el orden original.
+COLUMNAS_DESTACADAS = [
+    "IDTienda",
+    "NombreTienda",
+    "Zona",
+    "TipoRegalo",
+    "TipoRegaloAdicional",
+    "REGALO_1",
+    "DESC_REGALO_1",
+    "REGALO_2",
+    "DESC_REGALO_2",
+    "NOTAS",
+]
+
+
+COLUMNAS_INVENTARIO = [
+    "CodigoArticulo",
+    "DescripcionArticulo",
+    "ZonaElegible",
+    "TipoRegalo",
+    "CantidadDisponible",
+    "UnidadesEntregadas",
+]
+
+
+def columnas_al_frente(df, destacadas=None):
+    """Orden de columnas con las relevantes primero y el resto detrás.
+
+    Solo reordena la vista: el DataFrame y el Excel descargado no se tocan.
+    """
+    destacadas = COLUMNAS_DESTACADAS if destacadas is None else destacadas
+    presentes = [c for c in destacadas if c in df.columns]
+    return presentes + [c for c in df.columns if c not in presentes]
+
+
 def aviso_de_columna_ausente(tdas):
     """Avisa si la plantilla no traía la columna 'Regalo adicional'.
 
@@ -221,7 +258,19 @@ def mostrar_resultados(inv, tdas, resultado):
     )
 
     with tab1:
-        st.dataframe(asignaciones)
+        st.caption(
+            "Las columnas del resultado se muestran primero; el resto de la "
+            "plantilla queda a la derecha. El archivo descargado conserva el "
+            "orden original."
+        )
+        st.dataframe(
+            asignaciones,
+            column_order=columnas_al_frente(asignaciones),
+            column_config={
+                "NOTAS": st.column_config.TextColumn("NOTAS", width="large")
+            },
+            use_container_width=True,
+        )
         st.download_button(
             "⬇️ Descargar asignacion_final.xlsx",
             data=excel_bytes,
@@ -231,10 +280,21 @@ def mostrar_resultados(inv, tdas, resultado):
         )
 
     with tab2:
-        st.dataframe(inv_rest)
+        st.caption(
+            "Stock que quedó sin repartir. `CantidadDisponible` ya tiene los "
+            "descuentos de esta corrida y `UnidadesEntregadas` dice cuántas "
+            "salieron de cada fila."
+        )
+        st.dataframe(
+            inv_rest,
+            column_order=columnas_al_frente(inv_rest, COLUMNAS_INVENTARIO),
+            use_container_width=True,
+        )
 
     with tab3:
-        st.text_area("Resumen de la ejecución", reporte_txt, height=300)
+        # `st.code` respeta la fuente monoespaciada: el reporte alinea sus
+        # cifras en columna y con la tipografía normal la alineación se rompe.
+        st.code(reporte_txt, language=None)
         st.download_button(
             "⬇️ Descargar reporte.txt",
             data=reporte_txt.encode("utf-8"),
@@ -244,12 +304,25 @@ def mostrar_resultados(inv, tdas, resultado):
         )
 
     with tab4:
+        st.info(
+            "Estas son las **entradas tal como se leyeron**, antes de asignar: "
+            "las cantidades son las originales, sin descuentos. El stock ya "
+            "descontado está en la pestaña «Inventario Restante»."
+        )
         st.subheader("Inventario leído (columnas ya renombradas)")
         st.caption(origen_leido(inv))
-        st.dataframe(inv.head())
+        st.dataframe(
+            inv.head(),
+            column_order=columnas_al_frente(inv, COLUMNAS_INVENTARIO),
+            use_container_width=True,
+        )
         st.subheader("Tiendas leídas (columnas ya renombradas)")
         st.caption(origen_leido(tdas))
-        st.dataframe(tdas.head())
+        st.dataframe(
+            tdas.head(),
+            column_order=columnas_al_frente(tdas),
+            use_container_width=True,
+        )
 
 
 # --- Interfaz ---

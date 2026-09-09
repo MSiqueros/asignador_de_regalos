@@ -173,14 +173,27 @@ Hoja **`Asignacion`** — todas las columnas del archivo de tiendas, más:
 | `DESC_REGALO_2` | Descripción del segundo artículo                |
 | `NOTAS`         | Asignación parcial, o el motivo de no recibir nada |
 
-Hoja **`InventarioRestante`** — el stock que quedó sin repartir.
+Hoja **`InventarioRestante`** — el stock que quedó sin repartir, más una
+columna `UnidadesEntregadas` con lo que salió de cada fila en esta corrida.
+
+> ⚠️ El export de inventario repite la misma cantidad en varias columnas
+> (`CANTIDAD`, `SALDO`, `CANTIDADENTREGADA`). El mapeo solo renombra la
+> primera, así que las demás se **sincronizan al escribir la salida**: `SALDO`
+> queda igual a `CantidadDisponible` y la de entregadas acumula lo repartido.
+> Sin eso, la hoja mostraba `CantidadDisponible 5` junto a `SALDO 39` y se
+> leía como si el descuento no se hubiera hecho.
 
 ### `reporte.txt`
 
-Resumen de la corrida: estrategia usada, tiendas procesadas, tiendas con
-asignación, asignaciones parciales, tiendas que piden regalo adicional,
-regalos adicionales entregados, unidades restantes, advertencias de fechas y
-el detalle de cada excepción.
+Resumen de la corrida en secciones: *cobertura de tiendas* (completas,
+parciales y sin asignación, con su porcentaje), *regalos entregados*
+(primeros y adicionales), *inventario* y, si las hubo, *advertencias*.
+
+Las **excepciones se agrupan por motivo**, de la más frecuente a la menos, con
+hasta cinco tiendas de ejemplo y el conteo del resto. Con cientos de tiendas
+sin stock, la lista plana era ilegible y escondía que casi siempre se trata de
+unos pocos motivos repetidos. El detalle tienda por tienda está en la columna
+`NOTAS` de la hoja `Asignacion`.
 
 ---
 

@@ -504,7 +504,107 @@ def test_el_reporte_cuenta_los_regalos_adicionales():
 
     asignaciones, _, reporte, _ = ejecutar_asignacion(inv, tdas, "Sobrantes")
 
-    assert "Tiendas que piden regalo adicional: 2" in reporte
-    assert "Regalos adicionales entregados: 1" in reporte
     assert asignaciones.attrs["metricas"]["piden_adicional"] == 2
     assert asignaciones.attrs["metricas"]["adicionales_entregados"] == 1
+    # El reporte los muestra alineados en columna, no como 'etiqueta: valor'.
+    assert "Tiendas que piden regalo adicional" in reporte
+    assert "· regalo adicional" in reporte
+
+
+# ---------------------------------------------------------------------------
+# Coherencia de las columnas de cantidad en el inventario restante
+# ---------------------------------------------------------------------------
+def test_las_columnas_espejo_del_origen_reflejan_los_descuentos():
+    """El export trae CANTIDAD, SALDO y CANTIDADENTREGADA con el mismo dato.
+
+    La carga solo renombra la primera; si las otras no se sincronizan, la
+    salida muestra 'CantidadDisponible 3' junto a 'SALDO 5' y se lee como si
+    el descuento no se hubiera hecho.
+    """
+    inv = construir_inventario([("A", "TIPO1", "ART-1", "Taza", 5)])
+    inv["SALDO"] = 5
+    inv["CONTIDADENTREGADA"] = 0
+    tdas = construir_tiendas(
+        [(1, "Tienda A", "A", "TIPO1"), (2, "Tienda B", "A", "TIPO1")]
+    )
+
+    _, inv_rest, _, _ = ejecutar_asignacion(inv, tdas, "Sobrantes")
+
+    assert int(inv_rest.loc[0, "CantidadDisponible"]) == 3
+    assert int(inv_rest.loc[0, "SALDO"]) == 3
+    assert int(inv_rest.loc[0, "CONTIDADENTREGADA"]) == 2
+    assert int(inv_rest.loc[0, "UnidadesEntregadas"]) == 2
+
+
+def test_la_columna_de_entregadas_del_origen_acumula_sobre_lo_previo():
+    """Si el archivo ya traía un reparto anterior, esta corrida se suma."""
+    inv = construir_inventario([("A", "TIPO1", "ART-1", "Taza", 5)])
+    inv["CANTIDADENTREGADA"] = 10
+    tdas = construir_tiendas([(1, "Tienda A", "A", "TIPO1")])
+
+    _, inv_rest, _, _ = ejecutar_asignacion(inv, tdas, "Sobrantes")
+
+    assert int(inv_rest.loc[0, "CANTIDADENTREGADA"]) == 11
+    assert int(inv_rest.loc[0, "UnidadesEntregadas"]) == 1
+
+
+def test_el_inventario_sin_columnas_espejo_igual_reporta_lo_entregado():
+    inv = construir_inventario([("A", "TIPO1", "ART-1", "Taza", 5)])
+    tdas = construir_tiendas([(1, "Tienda A", "A", "TIPO1")])
+
+    _, inv_rest, _, _ = ejecutar_asignacion(inv, tdas, "Sobrantes")
+
+    assert int(inv_rest.loc[0, "UnidadesEntregadas"]) == 1
+    assert int(inv_rest.loc[0, "CantidadDisponible"]) == 4
+
+
+# ---------------------------------------------------------------------------
+# Legibilidad del reporte
+# ---------------------------------------------------------------------------
+def test_el_reporte_agrupa_las_excepciones_por_motivo():
+    """Con cientos de tiendas sin stock, la lista plana era ilegible."""
+    inv = construir_inventario([("A", "TIPO1", "ART-1", "Taza", 1)])
+    tdas = construir_tiendas(
+        [(i, f"Tienda {i}", "A", "TIPO9") for i in range(1, 13)]
+    )
+
+    _, _, reporte, _ = ejecutar_asignacion(inv, tdas, "Sobrantes")
+
+    # Un solo motivo con las 12 tiendas, no 12 líneas sueltas.
+    assert "EXCEPCIONES (12)" in reporte
+    assert "[  12]" in reporte
+    assert "y 7 tienda(s) más con este mismo motivo" in reporte
+
+
+def test_el_reporte_tiene_secciones_legibles():
+    inv = construir_inventario([("A", "TIPO1", "ART-1", "Taza", 5)])
+    tdas = construir_tiendas([(1, "Tienda A", "A", "TIPO1")])
+
+    _, _, reporte, _ = ejecutar_asignacion(inv, tdas, "Sobrantes")
+
+    for seccion in ("COBERTURA DE TIENDAS", "REGALOS ENTREGADOS", "INVENTARIO"):
+        assert seccion in reporte
+    # Las líneas no deben desbordar el ancho pensado para lectura en pantalla.
+    assert max(len(l) for l in reporte.splitlines()) <= 80
+
+
+def test_el_motivo_no_repite_el_tipo_cuando_principal_y_adicional_coinciden():
+    """'mayorista' ni 'mayorista' no aporta nada: es el mismo tipo dos veces."""
+    inv = construir_inventario([("A", "TIPO9", "ART-9", "Gorra", 5)])
+    tdas = construir_tiendas([(1, "Tienda A", "A", "TIPO1", "TIPO1")])
+
+    asignaciones, _, _, _ = ejecutar_asignacion(inv, tdas, "Sobrantes")
+
+    assert asignaciones.loc[0, "NOTAS"].count("TIPO1") == 1
+
+
+def test_los_porcentajes_del_reporte_estan_en_escala_de_cien():
+    inv = construir_inventario([("A", "TIPO1", "ART-1", "Taza", 1)])
+    tdas = construir_tiendas(
+        [(1, "Tienda A", "A", "TIPO1"), (2, "Tienda B", "A", "TIPO1")]
+    )
+
+    _, _, reporte, _ = ejecutar_asignacion(inv, tdas, "Sobrantes")
+
+    # 1 de 2 tiendas asignada: debe leerse 50.0%, no 0.5%.
+    assert "50.0%" in reporte
