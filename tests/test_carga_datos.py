@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from carga_datos import (
     INV_COLUMNAS,
     TDAS_COLUMNAS,
+    TDAS_COLUMNAS_OPCIONALES,
     cargar_inventario,
     cargar_tiendas,
     normalizar_encabezado,
@@ -267,21 +268,149 @@ def test_flujo_completo_desde_los_excel_hasta_la_asignacion():
         filas_basura=2,
     )
     tdas_file = construir_xlsx(
-        encabezados_de(TDAS_COLUMNAS),
-        [[101, "Tienda Centro", "LIMA", "TIPO1"], [102, "Tienda Norte", "LIMA", "TIPO1"]],
+        encabezados_de(TDAS_COLUMNAS) + ["Regalo adicional"],
+        [
+            [101, "Tienda Centro", "LIMA", "TIPO1", "TIPO1"],
+            [102, "Tienda Norte", "LIMA", "TIPO1", "TIPO1"],
+        ],
     )
 
     inv, err_inv = cargar_inventario(inv_file)
     tdas, err_tdas = cargar_tiendas(tdas_file)
     assert err_inv == [] and err_tdas == []
 
-    asignaciones, inv_rest, reporte, excel_bytes = ejecutar_asignacion(
-        inv, tdas, 2, "Sobrantes"
+    asignaciones, inv_rest, reporte, excel_bytes = ejecutar_asignacion(inv, tdas, "Sobrantes"
     )
 
     assert asignaciones["REGALO_1"].ne("").all()
     assert asignaciones["REGALO_2"].ne("").all()
     # 2 tiendas x 2 regalos = 4 unidades entregadas de 6 disponibles
     assert int(inv_rest["CantidadDisponible"].sum()) == 2
-    assert "Sin excepciones." in reporte
+    assert "Sin excepciones" in reporte
     assert excel_bytes[:2] == b"PK"  # un .xlsx es un zip
+
+
+# ---------------------------------------------------------------------------
+# Columnas opcionales
+# ---------------------------------------------------------------------------
+def test_mapea_la_columna_de_regalo_adicional_cuando_esta_presente():
+    df = pd.DataFrame(
+        [
+            {
+                "CODIGO": 1,
+                "NOMBRE_COLABORADOR": "Tienda A",
+                "TERRITORIO": "LIMA SUR",
+                "tamaño": "mediana",
+                "Regalo adicional": "pequeña",
+            }
+        ]
+    )
+
+    resultado, errores = preparar_dataframe(
+        df, TDAS_COLUMNAS, "Tiendas", TDAS_COLUMNAS_OPCIONALES
+    )
+
+    assert errores == []
+    assert resultado.loc[0, "TipoRegaloAdicional"] == "pequeña"
+    assert resultado.attrs["columnas_opcionales_ausentes"] == []
+
+
+def test_la_columna_opcional_ausente_no_es_un_error():
+    """Una plantilla vieja debe procesarse igual, con la columna vacía."""
+    df = pd.DataFrame(
+        [
+            {
+                "CODIGO": 1,
+                "NOMBRE_COLABORADOR": "Tienda A",
+                "TERRITORIO": "LIMA SUR",
+                "tamaño": "mediana",
+            }
+        ]
+    )
+
+    resultado, errores = preparar_dataframe(
+        df, TDAS_COLUMNAS, "Tiendas", TDAS_COLUMNAS_OPCIONALES
+    )
+
+    assert errores == []
+    assert resultado.loc[0, "TipoRegaloAdicional"] == ""
+    assert resultado.attrs["columnas_opcionales_ausentes"] == ["TipoRegaloAdicional"]
+
+
+def test_cargar_tiendas_lee_el_regalo_adicional_del_excel():
+    archivo = construir_xlsx(
+        encabezados_de(TDAS_COLUMNAS) + ["Regalo adicional"],
+        [[1, "Tienda A", "LIMA SUR", "mediana", "pequeña"]],
+    )
+
+    tdas, errores = cargar_tiendas(archivo)
+
+    assert errores == []
+    assert tdas.loc[0, "TipoRegaloAdicional"] == "pequeña"
+
+
+def test_la_columna_opcional_en_blanco_queda_vacia_y_no_nan():
+    """La plantilla real trae la columna, pero sin llenar: pandas la lee NaN.
+
+    El centinela de 'sin segundo regalo' debe ser uno solo, esté la columna
+    ausente o presente en blanco.
+    """
+    archivo = construir_xlsx(
+        encabezados_de(TDAS_COLUMNAS) + ["Regalo adicional"],
+        [[1, "Tienda A", "LIMA SUR", "mediana", None]],
+    )
+
+    tdas, errores = cargar_tiendas(archivo)
+
+    assert errores == []
+    assert tdas.loc[0, "TipoRegaloAdicional"] == ""
+    assert tdas["TipoRegaloAdicional"].notna().all()
+    assert tdas.attrs["columnas_opcionales_ausentes"] == []
+
+
+def test_la_columna_opcional_con_el_nombre_interno_no_se_duplica():
+    """Si el Excel ya trae 'TipoRegaloAdicional', renombrar crearía un duplicado.
+
+    La segunda fila viene sin valor: aun por este camino, el vacío tiene que
+    quedar normalizado al mismo centinela que en las otras ramas.
+    """
+    df = pd.DataFrame(
+        [
+            {
+                "CODIGO": 1,
+                "NOMBRE_COLABORADOR": "Tienda A",
+                "TERRITORIO": "LIMA SUR",
+                "tamaño": "mediana",
+                "TipoRegaloAdicional": "pequeña",
+            },
+            {
+                "CODIGO": 2,
+                "NOMBRE_COLABORADOR": "Tienda B",
+                "TERRITORIO": "LIMA SUR",
+                "tamaño": "grande",
+                "TipoRegaloAdicional": None,
+            },
+        ]
+    )
+
+    resultado, errores = preparar_dataframe(
+        df, TDAS_COLUMNAS, "Tiendas", TDAS_COLUMNAS_OPCIONALES
+    )
+
+    assert errores == []
+    assert not resultado.columns.duplicated().any()
+    assert resultado.loc[0, "TipoRegaloAdicional"] == "pequeña"
+    assert resultado.loc[1, "TipoRegaloAdicional"] == ""
+    assert resultado.attrs["columnas_opcionales_ausentes"] == []
+
+
+def test_cargar_tiendas_acepta_una_plantilla_sin_regalo_adicional():
+    archivo = construir_xlsx(
+        encabezados_de(TDAS_COLUMNAS), [[1, "Tienda A", "LIMA SUR", "mediana"]]
+    )
+
+    tdas, errores = cargar_tiendas(archivo)
+
+    assert errores == []
+    assert tdas.loc[0, "TipoRegaloAdicional"] == ""
+    assert "TipoRegaloAdicional" in tdas.attrs["columnas_opcionales_ausentes"]

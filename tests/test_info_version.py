@@ -117,7 +117,19 @@ def test_los_datos_de_ejemplo_producen_una_asignacion_completa():
     from asignador_regalos import ejecutar_asignacion
 
     inv, tdas = datos_de_ejemplo()
-    asignaciones, _, _, _ = ejecutar_asignacion(inv, tdas, 2, "Equitativo")
+    asignaciones, _, _, _ = ejecutar_asignacion(inv, tdas, "Equitativo")
 
     assert len(asignaciones) > 0
     assert asignaciones["REGALO_1"].ne("").all()
+
+
+def test_el_autochequeo_cubre_la_prioridad_y_el_regalo_adicional():
+    nombres = [r["nombre"] for r in autochequeo()]
+
+    assert "Prioridad del primer regalo" in nombres
+    assert "Regalo adicional de otro tipo" in nombres
+    assert "Columna opcional ausente" in nombres
+
+
+def test_la_version_mayor_refleja_el_cambio_de_contrato():
+    assert VERSION.startswith("3.")

@@ -14,7 +14,7 @@ import pandas as pd
 
 from asignador_regalos import ejecutar_asignacion
 
-VERSION = "2.0.0"
+VERSION = "3.0.0"
 
 RAIZ = Path(__file__).resolve().parent
 
@@ -103,15 +103,23 @@ def datos_de_ejemplo():
             "CantidadDisponible",
         ],
     )
+    # La tienda 101 pide un regalo adicional de otro tipo: así el botón de
+    # datos de ejemplo ejercita también la segunda pasada.
     tdas = pd.DataFrame(
         [
-            (101, "Tienda Centro", "LIMA", "TIPO1"),
-            (102, "Tienda Miraflores", "LIMA", "TIPO1"),
-            (103, "Tienda Surco", "LIMA", "TIPO2"),
-            (201, "Tienda Trujillo", "NORTE", "TIPO1"),
-            (202, "Tienda Chiclayo", "NORTE", "TIPO1"),
+            (101, "Tienda Centro", "LIMA", "TIPO1", "TIPO2"),
+            (102, "Tienda Miraflores", "LIMA", "TIPO1", ""),
+            (103, "Tienda Surco", "LIMA", "TIPO2", ""),
+            (201, "Tienda Trujillo", "NORTE", "TIPO1", ""),
+            (202, "Tienda Chiclayo", "NORTE", "TIPO1", ""),
         ],
-        columns=["IDTienda", "NombreTienda", "Zona", "TipoRegalo"],
+        columns=[
+            "IDTienda",
+            "NombreTienda",
+            "Zona",
+            "TipoRegalo",
+            "TipoRegaloAdicional",
+        ],
     )
     return inv, tdas
 
@@ -134,8 +142,16 @@ def _inventario(filas):
 
 
 def _tiendas(filas):
+    """filas: (id, nombre, zona, tipo) o (id, nombre, zona, tipo, tipo_adicional)."""
     return pd.DataFrame(
-        filas, columns=["IDTienda", "NombreTienda", "Zona", "TipoRegalo"]
+        [fila if len(fila) == 5 else (*fila, "") for fila in filas],
+        columns=[
+            "IDTienda",
+            "NombreTienda",
+            "Zona",
+            "TipoRegalo",
+            "TipoRegaloAdicional",
+        ],
     )
 
 
@@ -151,7 +167,7 @@ def _chequeo_stock_equitativo():
     )
     tdas = _tiendas([(1, "TA", "A", "T1"), (2, "TB", "B", "T1")])
 
-    asignaciones, inv_rest, _, _ = ejecutar_asignacion(inv, tdas, 1, "Equitativo")
+    asignaciones, inv_rest, _, _ = ejecutar_asignacion(inv, tdas, "Equitativo")
     entregado = int(asignaciones["REGALO_1"].ne("").sum())
     restante = int(inv_rest["CantidadDisponible"].sum())
 
@@ -163,7 +179,7 @@ def _chequeo_columnas_descripcion():
     inv = _inventario([("A", "T1", "A1", "Taza roja", "01/15/2025 09:00:00 AM", 5)])
     tdas = _tiendas([(1, "TA", "A", "T1")])
 
-    asignaciones, _, _, _ = ejecutar_asignacion(inv, tdas, 1, "Sobrantes")
+    asignaciones, _, _, _ = ejecutar_asignacion(inv, tdas, "Sobrantes")
     ok = "DESC_REGALO_1" in asignaciones.columns
     presentes = [c for c in asignaciones.columns if c.startswith("DESC_")]
     return ok, f"Columnas de descripción: {presentes or 'ninguna'}"
@@ -173,7 +189,7 @@ def _chequeo_fechas_flexibles():
     inv = _inventario([("A", "T1", "A1", "d", "2025-08-28 00:00:00", 5)])
     tdas = _tiendas([(1, "TA", "A", "T1")])
 
-    _, inv_rest, _, _ = ejecutar_asignacion(inv, tdas, 1, "Sobrantes")
+    _, inv_rest, _, _ = ejecutar_asignacion(inv, tdas, "Sobrantes")
     ok = bool(inv_rest["FechaIngreso"].notna().all())
     return ok, "Fecha ISO '2025-08-28' interpretada correctamente"
 
@@ -182,7 +198,7 @@ def _chequeo_cruce_mayusculas():
     inv = _inventario([("  lima ", "tipo1", "A1", "d", "01/15/2025 09:00:00 AM", 5)])
     tdas = _tiendas([(1, "TA", "LIMA", "TIPO1")])
 
-    asignaciones, _, _, _ = ejecutar_asignacion(inv, tdas, 1, "Sobrantes")
+    asignaciones, _, _, _ = ejecutar_asignacion(inv, tdas, "Sobrantes")
     ok = asignaciones.loc[0, "REGALO_1"] == "A1"
     return ok, "Zona '  lima ' cruza con 'LIMA'"
 
@@ -194,11 +210,53 @@ def _chequeo_regalos_distintos():
             ("A", "T1", "A2", "Polo", "01/15/2025 09:00:00 AM", 5),
         ]
     )
-    tdas = _tiendas([(1, "TA", "A", "T1")])
+    tdas = _tiendas([(1, "TA", "A", "T1", "T1")])
 
-    asignaciones, _, _, _ = ejecutar_asignacion(inv, tdas, 2, "Sobrantes")
+    asignaciones, _, _, _ = ejecutar_asignacion(inv, tdas, "Sobrantes")
     r1, r2 = asignaciones.loc[0, "REGALO_1"], asignaciones.loc[0, "REGALO_2"]
-    return r1 != r2, f"Con 2 regalos entrega '{r1}' y '{r2}'"
+    return r1 != r2, f"Con regalo adicional del mismo tipo entrega '{r1}' y '{r2}'"
+
+
+def _chequeo_prioridad_primer_regalo():
+    """La regla central: nadie recibe el segundo si falta un primero."""
+    inv = _inventario([("A", "T1", "A1", "Taza", "01/15/2025 09:00:00 AM", 2)])
+    tdas = _tiendas([(1, "TA", "A", "T1", "T1"), (2, "TB", "A", "T1")])
+
+    asignaciones, _, _, _ = ejecutar_asignacion(inv, tdas, "Sobrantes")
+    con_primer_regalo = int(asignaciones["REGALO_1"].ne("").sum())
+
+    ok = con_primer_regalo == 2 and asignaciones.loc[0, "REGALO_2"] == ""
+    return ok, f"2 unidades y 2 tiendas: {con_primer_regalo} con primer regalo"
+
+
+def _chequeo_regalo_adicional_de_otro_tipo():
+    inv = _inventario(
+        [
+            ("A", "T1", "A1", "Taza", "01/15/2025 09:00:00 AM", 5),
+            ("A", "T2", "B1", "Polo", "01/15/2025 09:00:00 AM", 5),
+        ]
+    )
+    tdas = _tiendas([(1, "TA", "A", "T1", "T2")])
+
+    asignaciones, _, _, _ = ejecutar_asignacion(inv, tdas, "Sobrantes")
+    r1, r2 = asignaciones.loc[0, "REGALO_1"], asignaciones.loc[0, "REGALO_2"]
+
+    ok = r1 == "A1" and r2 == "B1"
+    return ok, f"Tienda T1 con adicional T2 recibe '{r1}' y '{r2}'"
+
+
+def _chequeo_columna_opcional_ausente():
+    """Una plantilla vieja no debe romper la asignación."""
+    inv = _inventario([("A", "T1", "A1", "Taza", "01/15/2025 09:00:00 AM", 5)])
+    tdas = _tiendas([(1, "TA", "A", "T1")]).drop(columns=["TipoRegaloAdicional"])
+
+    asignaciones, _, _, _ = ejecutar_asignacion(inv, tdas, "Sobrantes")
+
+    ok = (
+        asignaciones.loc[0, "REGALO_1"] == "A1"
+        and asignaciones.loc[0, "REGALO_2"] == ""
+    )
+    return ok, "Plantilla sin 'Regalo adicional': 1 regalo por tienda, sin error"
 
 
 CHEQUEOS = [
@@ -207,6 +265,9 @@ CHEQUEOS = [
     ("Parseo flexible de fechas", _chequeo_fechas_flexibles),
     ("Cruce insensible a mayúsculas", _chequeo_cruce_mayusculas),
     ("Dos regalos distintos", _chequeo_regalos_distintos),
+    ("Prioridad del primer regalo", _chequeo_prioridad_primer_regalo),
+    ("Regalo adicional de otro tipo", _chequeo_regalo_adicional_de_otro_tipo),
+    ("Columna opcional ausente", _chequeo_columna_opcional_ausente),
 ]
 
 

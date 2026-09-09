@@ -164,7 +164,59 @@ def mostrar_errores(errores):
             st.caption(detalle)
 
 
-def procesar(inv_file, tdas_file, n_regalos, estrategia):
+# Lo que se mira primero al revisar una asignación: quién es la tienda, qué
+# recibió y por qué no recibió más. El resto de la plantilla (latitud, códigos
+# internos) empuja a NOTAS fuera de la pantalla si se deja el orden original.
+COLUMNAS_DESTACADAS = [
+    "IDTienda",
+    "NombreTienda",
+    "Zona",
+    "TipoRegalo",
+    "TipoRegaloAdicional",
+    "REGALO_1",
+    "DESC_REGALO_1",
+    "REGALO_2",
+    "DESC_REGALO_2",
+    "NOTAS",
+]
+
+
+COLUMNAS_INVENTARIO = [
+    "CodigoArticulo",
+    "DescripcionArticulo",
+    "ZonaElegible",
+    "TipoRegalo",
+    "CantidadDisponible",
+    "UnidadesEntregadas",
+]
+
+
+def columnas_al_frente(df, destacadas=None):
+    """Orden de columnas con las relevantes primero y el resto detrás.
+
+    Solo reordena la vista: el DataFrame y el Excel descargado no se tocan.
+    """
+    destacadas = COLUMNAS_DESTACADAS if destacadas is None else destacadas
+    presentes = [c for c in destacadas if c in df.columns]
+    return presentes + [c for c in df.columns if c not in presentes]
+
+
+def aviso_de_columna_ausente(tdas):
+    """Avisa si la plantilla no traía la columna 'Regalo adicional'.
+
+    Devuelve True si mostró el aviso, para poder probarlo sin levantar la app.
+    """
+    if "TipoRegaloAdicional" not in tdas.attrs.get("columnas_opcionales_ausentes", []):
+        return False
+    st.info(
+        "La plantilla de tiendas no trae la columna **Regalo adicional**: "
+        "cada tienda recibirá un solo regalo. Agrégala si necesitas asignar "
+        "un segundo obsequio."
+    )
+    return True
+
+
+def procesar(inv_file, tdas_file, estrategia):
     """Lee, valida y ejecuta la asignación. Devuelve None si la validación falla."""
     inv, errores_inv = cargar_inventario(inv_file)
     tdas, errores_tdas = cargar_tiendas(tdas_file)
@@ -174,7 +226,9 @@ def procesar(inv_file, tdas_file, n_regalos, estrategia):
     if inv is None or tdas is None:
         return None
 
-    return inv, tdas, ejecutar_asignacion(inv, tdas, n_regalos, estrategia)
+    aviso_de_columna_ausente(tdas)
+
+    return inv, tdas, ejecutar_asignacion(inv, tdas, estrategia)
 
 
 def mostrar_resultados(inv, tdas, resultado):
@@ -188,18 +242,35 @@ def mostrar_resultados(inv, tdas, resultado):
 
     tiendas_con_regalo = int(asignaciones["REGALO_1"].ne("").sum())
     total_entregado = tiendas_con_regalo + int(asignaciones["REGALO_2"].ne("").sum())
+    metricas = asignaciones.attrs.get("metricas", {})
 
-    m1, m2, m3 = st.columns(3)
+    m1, m2, m3, m4 = st.columns(4)
     m1.metric("Tiendas procesadas", len(asignaciones))
     m2.metric("Tiendas con asignación", tiendas_con_regalo)
     m3.metric("Regalos entregados", total_entregado)
+    m4.metric(
+        "Regalos adicionales entregados",
+        metricas.get("adicionales_entregados", 0),
+    )
 
     tab1, tab2, tab3, tab4 = st.tabs(
         ["🎯 Asignaciones", "📦 Inventario Restante", "📋 Reporte", "📊 Vistas Previas"]
     )
 
     with tab1:
-        st.dataframe(asignaciones)
+        st.caption(
+            "Las columnas del resultado se muestran primero; el resto de la "
+            "plantilla queda a la derecha. El archivo descargado conserva el "
+            "orden original."
+        )
+        st.dataframe(
+            asignaciones,
+            column_order=columnas_al_frente(asignaciones),
+            column_config={
+                "NOTAS": st.column_config.TextColumn("NOTAS", width="large")
+            },
+            use_container_width=True,
+        )
         st.download_button(
             "⬇️ Descargar asignacion_final.xlsx",
             data=excel_bytes,
@@ -209,10 +280,21 @@ def mostrar_resultados(inv, tdas, resultado):
         )
 
     with tab2:
-        st.dataframe(inv_rest)
+        st.caption(
+            "Stock que quedó sin repartir. `CantidadDisponible` ya tiene los "
+            "descuentos de esta corrida y `UnidadesEntregadas` dice cuántas "
+            "salieron de cada fila."
+        )
+        st.dataframe(
+            inv_rest,
+            column_order=columnas_al_frente(inv_rest, COLUMNAS_INVENTARIO),
+            use_container_width=True,
+        )
 
     with tab3:
-        st.text_area("Resumen de la ejecución", reporte_txt, height=300)
+        # `st.code` respeta la fuente monoespaciada: el reporte alinea sus
+        # cifras en columna y con la tipografía normal la alineación se rompe.
+        st.code(reporte_txt, language=None)
         st.download_button(
             "⬇️ Descargar reporte.txt",
             data=reporte_txt.encode("utf-8"),
@@ -222,12 +304,25 @@ def mostrar_resultados(inv, tdas, resultado):
         )
 
     with tab4:
+        st.info(
+            "Estas son las **entradas tal como se leyeron**, antes de asignar: "
+            "las cantidades son las originales, sin descuentos. El stock ya "
+            "descontado está en la pestaña «Inventario Restante»."
+        )
         st.subheader("Inventario leído (columnas ya renombradas)")
         st.caption(origen_leido(inv))
-        st.dataframe(inv.head())
+        st.dataframe(
+            inv.head(),
+            column_order=columnas_al_frente(inv, COLUMNAS_INVENTARIO),
+            use_container_width=True,
+        )
         st.subheader("Tiendas leídas (columnas ya renombradas)")
         st.caption(origen_leido(tdas))
-        st.dataframe(tdas.head())
+        st.dataframe(
+            tdas.head(),
+            column_order=columnas_al_frente(tdas),
+            use_container_width=True,
+        )
 
 
 # --- Interfaz ---
@@ -252,10 +347,10 @@ with col2:
         ["Sobrantes", "Novedades", "AltoStock", "Equitativo"],
         help="Define qué artículos se usarán primero.",
     )
-    n_regalos = st.selectbox(
-        "N° de regalos por tienda",
-        [1, 2],
-        help="Cuántos regalos se asignarán a cada tienda.",
+    st.caption(
+        "La cantidad de regalos ya no se elige aquí: la define la columna "
+        "**Regalo adicional** de la plantilla de tiendas. Si está vacía, la "
+        "tienda recibe un regalo; si trae un tipo, recibe además uno de ese tipo."
     )
 
 col_generar, col_demo = st.columns([3, 1])
@@ -277,7 +372,7 @@ if generar:
     else:
         with st.spinner("Procesando archivos y realizando asignaciones..."):
             try:
-                resultado = procesar(inv_file, tdas_file, n_regalos, estrategia)
+                resultado = procesar(inv_file, tdas_file, estrategia)
             except Exception as e:  # noqa: BLE001 - se muestra la traza al usuario
                 st.error("Ocurrió un error inesperado durante el proceso.")
                 st.exception(e)
@@ -293,7 +388,7 @@ elif demo:
             resultado = (
                 inv_demo,
                 tdas_demo,
-                ejecutar_asignacion(inv_demo, tdas_demo, n_regalos, estrategia),
+                ejecutar_asignacion(inv_demo, tdas_demo, estrategia),
             )
         except Exception as e:  # noqa: BLE001 - se muestra la traza al usuario
             st.error("Ocurrió un error inesperado con los datos de ejemplo.")
